@@ -8,6 +8,8 @@ from langgraph.graph import MessagesState
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
+from open_deep_research.research import StructuredResearch
+
 
 ###################
 # Structured Outputs
@@ -69,6 +71,7 @@ class AgentState(MessagesState):
     research_brief: Optional[str]
     raw_notes: Annotated[list[str], override_reducer] = []
     notes: Annotated[list[str], override_reducer] = []
+    research_results: Annotated[list[StructuredResearch], operator.add] = []
     final_report: str
 
 class SupervisorState(TypedDict):
@@ -77,6 +80,7 @@ class SupervisorState(TypedDict):
     supervisor_messages: Annotated[list[MessageLikeRepresentation], override_reducer]
     research_brief: str
     notes: Annotated[list[str], override_reducer] = []
+    research_results: Annotated[list[StructuredResearch], operator.add] = []
     research_iterations: int = 0
     raw_notes: Annotated[list[str], override_reducer] = []
 
@@ -87,10 +91,12 @@ class ResearcherState(TypedDict):
     tool_call_iterations: int = 0
     research_topic: str
     compressed_research: str
+    structured_research: Optional[StructuredResearch]
     raw_notes: Annotated[list[str], override_reducer] = []
 
 class ResearcherOutputState(BaseModel):
     """Output state from individual researchers."""
     
     compressed_research: str
+    structured_research: Optional[StructuredResearch] = None
     raw_notes: Annotated[list[str], override_reducer] = []

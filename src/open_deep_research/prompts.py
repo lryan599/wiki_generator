@@ -143,12 +143,13 @@ You can use any of the tools provided to you to find resources that can help ans
 </Task>
 
 <Available Tools>
-You have access to two main tools:
-1. **tavily_search**: For conducting web searches to gather information
-2. **think_tool**: For reflection and strategic planning during research
+You have access to research tools configured for this run:
+1. **Search tools**: Use the available web or knowledge-base search tools to gather information. Knowledge-base search results contain curated text, image, table, and chart evidence with node UUIDs.
+2. **Knowledge-base window tools**: After a knowledge-base search, use `knowledge_base_document_window` with a returned TextNode, ImageNode, or TableNode UUID to recover nearby mixed document elements. Use `knowledge_base_text_window` with a TextNode UUID when only neighboring text is needed. These tools preserve the source document order and do not perform another semantic search.
+3. **think_tool**: For reflection and strategic planning during research
 {mcp_prompt}
 
-**CRITICAL: Use think_tool after each search to reflect on results and plan next steps. Do not call think_tool with the tavily_search or any other tools. It should be to reflect on the results of the search.**
+**CRITICAL: Use think_tool after each search to reflect on results and plan next steps. Do not call think_tool together with search or other tools. It should be used separately to reflect on completed search results.**
 </Available Tools>
 
 <Instructions>
@@ -156,9 +157,10 @@ Think like a human researcher with limited time. Follow these steps:
 
 1. **Read the question carefully** - What specific information does the user need?
 2. **Start with broader searches** - Use broad, comprehensive queries first
-3. **After each search, pause and assess** - Do I have enough to answer? What's still missing?
-4. **Execute narrower searches as you gather information** - Fill in the gaps
-5. **Stop when you can answer confidently** - Don't keep searching for perfection
+3. **Expand useful knowledge-base hits** - When a result needs surrounding text, figures, or tables, call the appropriate window tool using its node UUID
+4. **After each search, pause and assess** - Do I have enough to answer? What's still missing?
+5. **Execute narrower searches as you gather information** - Fill in the gaps
+6. **Stop when you can answer confidently** - Don't keep searching for perfection
 </Instructions>
 
 <Hard Limits>
@@ -194,36 +196,28 @@ Only these fully comprehensive cleaned findings are going to be returned to the 
 </Task>
 
 <Guidelines>
-1. Your output findings should be fully comprehensive and include ALL of the information and sources that the researcher has gathered from tool calls and web searches. It is expected that you repeat key information verbatim.
+1. Your output findings should be fully comprehensive and include ALL of the information that the researcher has gathered from tool calls and web searches. It is expected that you repeat key information verbatim.
 2. This report can be as long as necessary to return ALL of the information that the researcher has gathered.
-3. In your report, you should return inline citations for each source that the researcher found.
-4. You should include a "Sources" section at the end of the report that lists all of the sources the researcher found with corresponding citations, cited against statements in the report.
-5. Make sure to include ALL of the sources that the researcher gathered in the report, and how they were used to answer the question!
-6. It's really important not to lose any sources. A later LLM will be used to merge this report with others, so having all of the sources is critical.
+3. Every finding must list the stable source IDs that support it.
+4. Use only source IDs that appear in the tool results. Knowledge-base source IDs are document element UUIDs; web source IDs are source URLs.
+5. Do not invent source IDs or metadata.
+6. It's important not to lose relevant findings. A later LLM will merge this result with others using the stable source IDs.
 </Guidelines>
 
-<Output Format>
-The report should be structured like this:
-**List of Queries and Tool Calls Made**
-**Fully Comprehensive Findings**
-**List of All Relevant Sources (with citations in the report)**
-</Output Format>
+<Structured Output Rules>
+Return only the requested findings draft object rather than Markdown.
+- findings: comprehensive factual findings.
+- Each finding must include source_ids copied exactly from tool results.
+- Do not return research_topic, queries_and_tool_calls, or sources; the application derives those values directly from the tool messages.
+- Do not use local citation numbers such as [1] because multiple researchers will be merged later.
+</Structured Output Rules>
 
-<Citation Rules>
-- Assign each unique URL a single citation number in your text
-- End with ### Sources that lists each source with corresponding numbers
-- IMPORTANT: Number sources sequentially without gaps (1,2,3,4...) in the final list regardless of which sources you choose
-- Example format:
-  [1] Source Title: URL
-  [2] Source Title: URL
-</Citation Rules>
-
-Critical Reminder: It is extremely important that any information that is even remotely relevant to the user's research topic is preserved verbatim (e.g. don't rewrite it, don't summarize it, don't paraphrase it).
+Critical Reminder: It is extremely important that any information that is even remotely relevant to the user's research topic is preserved as findings with explicit source_id links.
 """
 
 compress_research_simple_human_message = """All above messages are about research conducted by an AI Researcher. Please clean up these findings.
 
-DO NOT summarize the information. I want the raw information returned, just in a cleaner format. Make sure all relevant information is preserved - you can rewrite findings verbatim."""
+DO NOT discard relevant information. Return only structured findings, preserving exact source identifiers from the tool results."""
 
 final_report_generation_prompt = """Based on all the research conducted, create a comprehensive, well-structured answer to the overall research brief:
 <Research Brief>
@@ -245,12 +239,18 @@ Here are the findings from the research that you conducted:
 {findings}
 </Findings>
 
+When Findings contains structured JSON, its sources have citation_id values such as S1.
+- Cite supporting sources inline using the exact token [[S1]].
+- Only use citation IDs present in the supplied sources.
+- Do not create Markdown links yourself and do not alter or invent URLs.
+- Do not write a Sources section. The application validates citation tokens, converts them to links, and appends the authoritative Sources section after generation.
+
 Please create a detailed answer to the overall research brief that:
 1. Is well-organized with proper headings (# for title, ## for sections, ### for subsections)
 2. Includes specific facts and insights from the research
-3. References relevant sources using [Title](URL) format
+3. References relevant sources using the supplied citation tokens
 4. Provides a balanced, thorough analysis. Be as comprehensive as possible, and include all information that is relevant to the overall research question. People are using you for deep research and will expect detailed, comprehensive answers.
-5. Includes a "Sources" section at the end with all referenced links
+5. Does not include a manually generated Sources section
 
 You can structure your report in a number of different ways. Here are some examples:
 
@@ -293,18 +293,7 @@ REMEMBER:
 The brief and research may be in English, but you need to translate this information to the right language when writing the final answer.
 Make sure the final answer report is in the SAME language as the human messages in the message history.
 
-Format the report in clear markdown with proper structure and include source references where appropriate.
-
-<Citation Rules>
-- Assign each unique URL a single citation number in your text
-- End with ### Sources that lists each source with corresponding numbers
-- IMPORTANT: Number sources sequentially without gaps (1,2,3,4...) in the final list regardless of which sources you choose
-- Each source should be a separate line item in a list, so that in markdown it is rendered as a list.
-- Example format:
-  [1] Source Title: URL
-  [2] Source Title: URL
-- Citations are extremely important. Make sure to include these, and pay a lot of attention to getting these right. Users will often use these citations to look into more information.
-</Citation Rules>
+Format the report in clear markdown with proper structure and use the supplied citation tokens wherever factual claims rely on research findings.
 """
 
 

@@ -63,6 +63,13 @@ Ask a question in the `messages` input field and click `Submit`. Select differen
 
 Open Deep Research supports a wide range of LLM providers via the [init_chat_model() API](https://python.langchain.com/docs/how_to/chat_models_universal_init/). It uses LLMs for a few different tasks. See the below model fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
 
+For an OpenAI-compatible model endpoint, configure:
+
+```env
+OPENAI_API_KEY=your-api-key
+OPENAI_BASE_URL=http://your-openai-compatible-server/v1
+```
+
 - **Summarization** (default: `openai:gpt-4.1-mini`): Summarizes search API results
 - **Research** (default: `openai:gpt-4.1`): Power the search agent
 - **Compression** (default: `openai:gpt-4.1`): Compresses research findings
@@ -75,6 +82,26 @@ Open Deep Research supports a wide range of LLM providers via the [init_chat_mod
 #### Search API :mag:
 
 Open Deep Research supports a wide range of search tools. By default it uses the [Tavily](https://www.tavily.com/) search API. Has full MCP compatibility and work native web search for Anthropic and OpenAI. See the `search_api` and `mcp_config` fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
+
+To enable workspace knowledge-base retrieval alongside the selected web search provider, configure the shared Query/Window API base URL and an optional default workspace:
+
+```env
+KNOWLEDGE_BASE_URL=http://127.0.0.1:8000
+WORKSPACE_ID=your-workspace-id
+KNOWLEDGE_BASE_QUERY_TIMEOUT_SECONDS=120
+KNOWLEDGE_BASE_WINDOW_TIMEOUT_SECONDS=120
+SUMMARIZATION_TIMEOUT_SECONDS=60
+```
+
+The knowledge-base tools are:
+
+- `knowledge_base_search`: calls `POST /api/v1/workspaces/{workspace_id}/query` with `only_need_data=true`, stopping before reranking and LLM generation. It exposes only curated text, image, table, and chart evidence fields needed by the researcher.
+- `knowledge_base_document_window`: calls the document-element Window API with a TextNode, ImageNode, or TableNode UUID and returns nearby mixed elements in source order.
+- `knowledge_base_text_window`: calls the text-node Window API with a TextNode UUID and returns nearby text nodes in source order.
+
+Both window tools accept `k`, where the response contains at most `k + 1` items including the center node. If `WORKSPACE_ID` is not configured, the researcher must provide `workspace_id` in each tool call.
+
+Timeouts are configurable in LangGraph Studio or through the environment variables above. Query and Window API calls default to 120 seconds per request; each webpage summarization call defaults to 60 seconds.
 
 #### Other 
 

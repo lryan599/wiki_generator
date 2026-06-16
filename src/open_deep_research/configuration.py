@@ -2,7 +2,7 @@
 
 import os
 from enum import Enum
-from typing import Any, List, Optional
+from typing import Any, List
 
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
@@ -19,17 +19,17 @@ class SearchAPI(Enum):
 class MCPConfig(BaseModel):
     """Configuration for Model Context Protocol (MCP) servers."""
     
-    url: Optional[str] = Field(
+    url: str | None = Field(
         default=None,
         optional=True,
     )
     """The URL of the MCP server"""
-    tools: Optional[List[str]] = Field(
+    tools: List[str] | None = Field(
         default=None,
         optional=True,
     )
     """The tools to make available to the LLM"""
-    auth_required: Optional[bool] = Field(
+    auth_required: bool | None = Field(
         default=False,
         optional=True,
     )
@@ -52,11 +52,11 @@ class Configuration(BaseModel):
         }
     )
     allow_clarification: bool = Field(
-        default=True,
+        default=False,
         metadata={
             "x_oap_ui_config": {
                 "type": "boolean",
-                "default": True,
+                "default": False,
                 "description": "Whether to allow the researcher to ask the user clarifying questions before starting research"
             }
         }
@@ -76,7 +76,7 @@ class Configuration(BaseModel):
     )
     # Research Configuration
     search_api: SearchAPI = Field(
-        default=SearchAPI.TAVILY,
+        default=SearchAPI.NONE,
         metadata={
             "x_oap_ui_config": {
                 "type": "select",
@@ -88,6 +88,59 @@ class Configuration(BaseModel):
                     {"label": "Anthropic Native Web Search", "value": SearchAPI.ANTHROPIC.value},
                     {"label": "None", "value": SearchAPI.NONE.value}
                 ]
+            }
+        }
+    )
+    knowledge_base_url: str | None = Field(
+        default=None,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "text",
+                "description": "Base URL shared by the workspace Query and Window APIs. Can also be set with the KNOWLEDGE_BASE_URL environment variable."
+            }
+        }
+    )
+    workspace_id: str | None = Field(
+        default=None,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "text",
+                "description": "Default workspace ID for knowledge base retrieval tools. Can also be set with the WORKSPACE_ID environment variable."
+            }
+        }
+    )
+    openai_base_url: str | None = Field(
+        default=None,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "text",
+                "description": "Optional base URL for OpenAI-compatible model APIs. Can also be set with the OPENAI_BASE_URL environment variable."
+            }
+        }
+    )
+    knowledge_base_query_timeout_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "number",
+                "default": 120,
+                "min": 1,
+                "max": 3600,
+                "description": "Timeout in seconds for each knowledge-base Query API request"
+            }
+        }
+    )
+    knowledge_base_window_timeout_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "number",
+                "default": 120,
+                "min": 1,
+                "max": 3600,
+                "description": "Timeout in seconds for each knowledge-base Window API request"
             }
         }
     )
@@ -135,6 +188,19 @@ class Configuration(BaseModel):
                 "type": "number",
                 "default": 8192,
                 "description": "Maximum output tokens for summarization model"
+            }
+        }
+    )
+    summarization_timeout_seconds: float = Field(
+        default=600.0,
+        gt=0,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "number",
+                "default": 60,
+                "min": 1,
+                "max": 3600,
+                "description": "Timeout in seconds for each webpage summarization model call"
             }
         }
     )
@@ -211,7 +277,7 @@ class Configuration(BaseModel):
         }
     )
     # MCP server configuration
-    mcp_config: Optional[MCPConfig] = Field(
+    mcp_config: MCPConfig | None = Field(
         default=None,
         optional=True,
         metadata={
@@ -221,7 +287,7 @@ class Configuration(BaseModel):
             }
         }
     )
-    mcp_prompt: Optional[str] = Field(
+    mcp_prompt: str | None = Field(
         default=None,
         optional=True,
         metadata={
@@ -235,7 +301,7 @@ class Configuration(BaseModel):
 
     @classmethod
     def from_runnable_config(
-        cls, config: Optional[RunnableConfig] = None
+        cls, config: RunnableConfig | None = None
     ) -> "Configuration":
         """Create a Configuration instance from a RunnableConfig."""
         configurable = config.get("configurable", {}) if config else {}

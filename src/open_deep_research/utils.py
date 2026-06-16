@@ -1,11 +1,13 @@
 """Utility functions and helpers for the Deep Research agent."""
 
 import asyncio
+import json
 import logging
 import os
 import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal, Optional
+from urllib.parse import quote, urljoin, urlparse
 
 import aiohttp
 from langchain.chat_models import init_chat_model
@@ -82,12 +84,12 @@ async def tavily_search(
     max_char_to_include = configurable.max_content_length
     
     # Initialize summarization model with retry logic
-    model_api_key = get_api_key_for_model(configurable.summarization_model, config)
     summarization_model = init_chat_model(
-        model=configurable.summarization_model,
-        max_tokens=configurable.summarization_model_max_tokens,
-        api_key=model_api_key,
-        tags=["langsmith:nostream"]
+        **get_chat_model_config(
+            configurable.summarization_model,
+            configurable.summarization_model_max_tokens,
+            config,
+        )
     ).with_structured_output(Summary).with_retry(
         stop_after_attempt=configurable.max_structured_output_retries
     )
@@ -101,7 +103,8 @@ async def tavily_search(
         noop() if not result.get("raw_content") 
         else summarize_webpage(
             summarization_model, 
-            result['raw_content'][:max_char_to_include]
+            result['raw_content'][:max_char_to_include],
+            timeout_seconds=configurable.summarization_timeout_seconds,
         )
         for result in unique_results.values()
     ]
@@ -172,12 +175,505 @@ async def tavily_search_async(
     search_results = await asyncio.gather(*search_tasks)
     return search_results
 
-async def summarize_webpage(model: BaseChatModel, webpage_content: str) -> str:
+
+##########################
+# Knowledge Base Search Tool Utils
+##########################
+KNOWLEDGE_BASE_SEARCH_DESCRIPTION = (
+    "Search a workspace knowledge base for relevant text, images, and tables. "
+    "Returns curated evidence fields and document element UUIDs for follow-up window retrieval."
+)
+KNOWLEDGE_BASE_DOCUMENT_WINDOW_DESCRIPTION = (
+    "Fetch nearby text, image, and table elements around a knowledge-base result. "
+    "Use an element UUID returned by knowledge_base_search to recover its ordered document context."
+)
+KNOWLEDGE_BASE_TEXT_WINDOW_DESCRIPTION = (
+    "Fetch nearby text nodes around a text result from the knowledge base. "
+    "Use a TextNode UUID returned by knowledge_base_search when only textual context is needed."
+)
+
+
+def _validate_workspace_api_base_url(base_url: str) -> str:
+    """Validate and normalize the shared workspace API base URL."""
+    normalized_url = base_url.strip().rstrip("/")
+    parsed_url = urlparse(normalized_url)
+    if parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc:
+        raise ToolException(
+            "KNOWLEDGE_BASE_URL must be an absolute HTTP(S) URL, for example http://127.0.0.1:8000."
+        )
+    return normalized_url
+
+
+def _absolute_resource_url(url: Any, base_url: str) -> str | None:
+    """Convert a non-empty resource URL to an absolute URL."""
+    if not isinstance(url, str) or not url:
+        return None
+    return urljoin(f"{base_url}/", url.lstrip("/"))
+
+
+def _select_fields(result: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """Select meaningful fields from a retrieval result."""
+    return {
+        field: result[field]
+        for field in fields
+        if field in result and result[field] not in (None, "")
+    }
+
+
+def _normalize_query_result(
+    query_result: dict[str, Any],
+    query: str,
+    base_url: str,
+) -> dict[str, Any]:
+    """Reduce a Query API response to evidence fields useful to the researcher."""
+    metadata = query_result.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ToolException("Query API response does not contain retrieval metadata.")
+
+    normalized: dict[str, Any] = {
+        "query": query,
+        "text_results": [],
+        "image_results": [],
+        "table_results": [],
+        "chart_results": [],
+    }
+
+    common_fields = ("uuid", "name", "group_id", "labels", "attributes")
+
+    for result in metadata.get("text_results") or []:
+        if isinstance(result, dict):
+            normalized["text_results"].append(_select_fields(
+                result,
+                common_fields + ("content", "enhanced_str", "score"),
+            ))
+
+    multimodal_fields = common_fields + (
+        "url",
+        "caption",
+        "summary",
+        "description",
+        "body",
+        "score",
+    )
+    for result_type in ("image_results", "table_results", "chart_results"):
+        for result in metadata.get(result_type) or []:
+            if not isinstance(result, dict):
+                continue
+            selected = _select_fields(result, multimodal_fields)
+            resource_url = _absolute_resource_url(selected.get("url"), base_url)
+            if resource_url:
+                selected["url"] = resource_url
+            normalized[result_type].append(selected)
+
+    return normalized
+
+
+def _format_knowledge_base_results(results: list[dict[str, Any]]) -> str:
+    """Format normalized retrieval evidence without exposing raw API metadata."""
+    sections = ["Knowledge base search results:"]
+    result_labels = (
+        ("text_results", "Text results"),
+        ("image_results", "Image results"),
+        ("table_results", "Table results"),
+        ("chart_results", "Chart results"),
+    )
+
+    for query_index, result in enumerate(results, start=1):
+        sections.append(f"\n## Query {query_index}: {result['query']}")
+        for result_key, label in result_labels:
+            items = result[result_key]
+            if not items:
+                continue
+            sections.append(f"\n### {label}")
+            for item_index, item in enumerate(items, start=1):
+                sections.append(
+                    f"{item_index}. " + json.dumps(item, ensure_ascii=False)
+                )
+
+        if not any(result[key] for key, _ in result_labels):
+            sections.append("\nNo relevant results found.")
+
+    return "\n".join(sections)
+
+
+def _limit_knowledge_base_results(
+    results: list[dict[str, Any]],
+    text_topk: int = 10,
+    image_topk: int = 3,
+    table_topk: int = 3,
+    chart_topk: int = 3,
+) -> list[dict[str, Any]]:
+    """Limit normalized Query API results by result type before tool output."""
+    limits = {
+        "text_results": max(text_topk, 0),
+        "image_results": max(image_topk, 0),
+        "table_results": max(table_topk, 0),
+        "chart_results": max(chart_topk, 0),
+    }
+    limited_results = []
+
+    for result in results:
+        limited_result = dict(result)
+        for result_key, limit in limits.items():
+            items = limited_result.get(result_key)
+            if isinstance(items, list):
+                limited_result[result_key] = items[:limit]
+        limited_results.append(limited_result)
+
+    return limited_results
+
+
+def _resolve_document_element_urls(
+    window_result: dict[str, Any],
+    base_url: str,
+) -> dict[str, Any]:
+    """Convert relative image and table URLs in a document window to absolute URLs."""
+    elements = []
+    center = window_result.get("center")
+    if isinstance(center, dict):
+        elements.append(center)
+
+    items = window_result.get("items")
+    if isinstance(items, list):
+        elements.extend(item for item in items if isinstance(item, dict))
+
+    for element in elements:
+        element_url = element.get("url")
+        if isinstance(element_url, str) and element_url:
+            element["url"] = urljoin(f"{base_url}/", element_url.lstrip("/"))
+
+    return window_result
+
+
+async def _get_workspace_window_async(
+    resource: Literal["document-elements", "text-nodes"],
+    node_id: str,
+    workspace_id: str,
+    base_url: str,
+    k: int = 4,
+    timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Call a workspace Window API endpoint and return its JSON response."""
+    normalized_node_id = node_id.strip()
+    normalized_workspace_id = workspace_id.strip()
+    normalized_base_url = _validate_workspace_api_base_url(base_url)
+    if not normalized_node_id:
+        raise ToolException("node_id must not be empty.")
+    if not normalized_workspace_id:
+        raise ToolException("workspace_id must not be empty.")
+
+    endpoint = (
+        f"{normalized_base_url}"
+        f"/api/v1/workspaces/{quote(normalized_workspace_id, safe='')}"
+        f"/{resource}/{quote(normalized_node_id, safe='')}/window?k={k}"
+    )
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(endpoint) as response:
+                response_text = await response.text()
+                if response.status >= 400:
+                    raise ToolException(
+                        f"Window API request failed with HTTP {response.status}: "
+                        f"{response_text[:500]}"
+                    )
+    except asyncio.TimeoutError as exc:
+        raise ToolException(
+            f"Window API request timed out after {timeout_seconds:g} seconds."
+        ) from exc
+    except aiohttp.ClientError as exc:
+        raise ToolException(f"Window API request failed: {exc}") from exc
+
+    try:
+        window_result = json.loads(response_text)
+    except json.JSONDecodeError as exc:
+        raise ToolException("Window API returned a non-JSON response.") from exc
+
+    if not isinstance(window_result, dict):
+        raise ToolException("Window API returned an invalid response object.")
+
+    return _resolve_document_element_urls(window_result, normalized_base_url)
+
+
+async def get_document_element_window_async(
+    element_node_id: str,
+    workspace_id: str,
+    base_url: str,
+    k: int = 4,
+    timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Fetch an ordered multimodal window around a document element."""
+    return await _get_workspace_window_async(
+        resource="document-elements",
+        node_id=element_node_id,
+        workspace_id=workspace_id,
+        base_url=base_url,
+        k=k,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def get_text_node_window_async(
+    text_node_id: str,
+    workspace_id: str,
+    base_url: str,
+    k: int = 4,
+    timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Fetch an ordered text-only window around a TextNode."""
+    return await _get_workspace_window_async(
+        resource="text-nodes",
+        node_id=text_node_id,
+        workspace_id=workspace_id,
+        base_url=base_url,
+        k=k,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+async def query_workspace_async(
+    query: str,
+    workspace_id: str,
+    base_url: str,
+    chunk_top_k: int = 10,
+    similarity_threshold: float = 0.2,
+    timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Query one workspace and return normalized multimodal retrieval evidence."""
+    normalized_query = query.strip()
+    normalized_workspace_id = workspace_id.strip()
+    normalized_base_url = _validate_workspace_api_base_url(base_url)
+    if not normalized_query:
+        raise ToolException("Query must not be empty.")
+    if not normalized_workspace_id:
+        raise ToolException("workspace_id must not be empty.")
+
+    endpoint = (
+        f"{normalized_base_url}"
+        f"/api/v1/workspaces/{quote(normalized_workspace_id, safe='')}/query"
+    )
+    payload = {
+        "query": normalized_query,
+        "mode": "naive",
+        "naive_kwargs": {"enable_multimodal": True},
+        "only_need_data": True,
+        "similarity_threshold": similarity_threshold,
+        "chunk_top_k": chunk_top_k,
+        "enable_rerank": False,
+        "stream": False,
+    }
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(endpoint, json=payload) as response:
+                response_text = await response.text()
+                if response.status >= 400:
+                    raise ToolException(
+                        f"Query API request failed with HTTP {response.status}: "
+                        f"{response_text[:500]}"
+                    )
+    except asyncio.TimeoutError as exc:
+        raise ToolException(
+            f"Query API request timed out after {timeout_seconds:g} seconds."
+        ) from exc
+    except aiohttp.ClientError as exc:
+        raise ToolException(f"Query API request failed: {exc}") from exc
+
+    try:
+        query_result = json.loads(response_text)
+    except json.JSONDecodeError as exc:
+        raise ToolException("Query API returned a non-JSON response.") from exc
+
+    if not isinstance(query_result, dict):
+        raise ToolException("Query API returned an invalid response object.")
+
+    return _normalize_query_result(
+        query_result,
+        query=normalized_query,
+        base_url=normalized_base_url,
+    )
+
+
+@tool(description=KNOWLEDGE_BASE_SEARCH_DESCRIPTION, response_format="content_and_artifact")
+async def knowledge_base_search(
+    queries: List[str],
+    workspace_id: str | None = None,
+    text_topk: int = 10,
+    image_topk: int = 3,
+    table_topk: int = 3,
+    chart_topk: int = 3,
+    chunk_top_k: Annotated[int, InjectedToolArg] = 10,
+    similarity_threshold: Annotated[float, InjectedToolArg] = 0.2,
+    config: RunnableConfig = None,
+) -> str:
+    """Search configured workspace content without invoking the Query API's LLM.
+
+    Args:
+        queries: Natural-language queries to run against the workspace
+        workspace_id: Workspace to search; defaults to WORKSPACE_ID when configured
+        text_topk: Maximum text results to return after retrieval
+        image_topk: Maximum image results to return after retrieval
+        table_topk: Maximum table results to return after retrieval
+        chart_topk: Maximum chart results to return after retrieval
+        chunk_top_k: Maximum results to request from the Query API for each content type
+        similarity_threshold: Minimum vector similarity threshold
+        config: Runtime configuration containing KNOWLEDGE_BASE_URL and WORKSPACE_ID
+
+    Returns:
+        Concise text containing curated text, image, table, and chart evidence
+    """
+    resolved_base_url, resolved_workspace_id = _resolve_workspace_config(
+        config,
+        workspace_id,
+    )
+    configurable = Configuration.from_runnable_config(config)
+
+    normalized_queries = [query.strip() for query in queries if query.strip()]
+    if not normalized_queries:
+        raise ToolException("At least one non-empty query is required.")
+
+    results = await asyncio.gather(*[
+        query_workspace_async(
+            query=query,
+            workspace_id=resolved_workspace_id,
+            base_url=resolved_base_url,
+            chunk_top_k=chunk_top_k,
+            similarity_threshold=similarity_threshold,
+            timeout_seconds=configurable.knowledge_base_query_timeout_seconds,
+        )
+        for query in normalized_queries
+    ])
+    results = _limit_knowledge_base_results(
+        results,
+        text_topk=text_topk,
+        image_topk=image_topk,
+        table_topk=table_topk,
+        chart_topk=chart_topk,
+    )
+
+    formatted_results = _format_knowledge_base_results(results)
+    return formatted_results, {
+        "type": "knowledge_base_search",
+        "results": results,
+    }
+
+
+def _resolve_workspace_config(
+    config: RunnableConfig,
+    workspace_id: str | None,
+) -> tuple[str, str]:
+    """Resolve the shared Window and Query API configuration."""
+    configurable = Configuration.from_runnable_config(config)
+    resolved_base_url = configurable.knowledge_base_url
+    resolved_workspace_id = workspace_id or configurable.workspace_id
+
+    if not resolved_base_url:
+        raise ToolException(
+            "Knowledge base tools are not configured. Set the KNOWLEDGE_BASE_URL environment variable."
+        )
+    if not resolved_workspace_id:
+        raise ToolException(
+            "A workspace_id is required. Pass it to the tool or set WORKSPACE_ID."
+        )
+
+    return resolved_base_url, resolved_workspace_id
+
+
+@tool(description=KNOWLEDGE_BASE_DOCUMENT_WINDOW_DESCRIPTION, response_format="content_and_artifact")
+async def knowledge_base_document_window(
+    element_node_id: str,
+    workspace_id: str | None = None,
+    k: int = 4,
+    config: RunnableConfig = None,
+) -> tuple[str, dict[str, Any]]:
+    """Fetch mixed document elements near a knowledge-base result.
+
+    Args:
+        element_node_id: UUID of a TextNode, ImageNode, or TableNode
+        workspace_id: Workspace to read; defaults to WORKSPACE_ID when configured
+        k: Maximum number of additional context elements; response has at most k + 1 items
+        config: Runtime configuration containing KNOWLEDGE_BASE_URL and WORKSPACE_ID
+
+    Returns:
+        JSON-formatted text containing the ordered multimodal document window
+    """
+    resolved_base_url, resolved_workspace_id = _resolve_workspace_config(
+        config,
+        workspace_id,
+    )
+    configurable = Configuration.from_runnable_config(config)
+    result = await get_document_element_window_async(
+        element_node_id=element_node_id,
+        workspace_id=resolved_workspace_id,
+        base_url=resolved_base_url,
+        k=k,
+        timeout_seconds=configurable.knowledge_base_window_timeout_seconds,
+    )
+    content = "Knowledge base document window:\n\n" + json.dumps(
+        result,
+        ensure_ascii=False,
+        indent=2,
+    )
+    return content, {
+        "type": "knowledge_base_document_window",
+        "result": result,
+    }
+
+
+@tool(description=KNOWLEDGE_BASE_TEXT_WINDOW_DESCRIPTION, response_format="content_and_artifact")
+async def knowledge_base_text_window(
+    text_node_id: str,
+    workspace_id: str | None = None,
+    k: int = 4,
+    config: RunnableConfig = None,
+) -> tuple[str, dict[str, Any]]:
+    """Fetch nearby TextNodes around a knowledge-base text result.
+
+    Args:
+        text_node_id: UUID of the center TextNode
+        workspace_id: Workspace to read; defaults to WORKSPACE_ID when configured
+        k: Maximum number of additional text nodes; response has at most k + 1 items
+        config: Runtime configuration containing KNOWLEDGE_BASE_URL and WORKSPACE_ID
+
+    Returns:
+        JSON-formatted text containing the ordered text-only document window
+    """
+    resolved_base_url, resolved_workspace_id = _resolve_workspace_config(
+        config,
+        workspace_id,
+    )
+    configurable = Configuration.from_runnable_config(config)
+    result = await get_text_node_window_async(
+        text_node_id=text_node_id,
+        workspace_id=resolved_workspace_id,
+        base_url=resolved_base_url,
+        k=k,
+        timeout_seconds=configurable.knowledge_base_window_timeout_seconds,
+    )
+    content = "Knowledge base text window:\n\n" + json.dumps(
+        result,
+        ensure_ascii=False,
+        indent=2,
+    )
+    return content, {
+        "type": "knowledge_base_text_window",
+        "result": result,
+    }
+
+
+async def summarize_webpage(
+    model: BaseChatModel,
+    webpage_content: str,
+    timeout_seconds: float = 60.0,
+) -> str:
     """Summarize webpage content using AI model with timeout protection.
     
     Args:
         model: The chat model configured for summarization
         webpage_content: Raw webpage content to be summarized
+        timeout_seconds: Maximum duration for the model call
         
     Returns:
         Formatted summary with key excerpts, or original content if summarization fails
@@ -192,7 +688,7 @@ async def summarize_webpage(model: BaseChatModel, webpage_content: str) -> str:
         # Execute summarization with timeout to prevent hanging
         summary = await asyncio.wait_for(
             model.ainvoke([HumanMessage(content=prompt_content)]),
-            timeout=60.0  # 60 second timeout for summarization
+            timeout=timeout_seconds,
         )
         
         # Format the summary with structured sections
@@ -205,7 +701,10 @@ async def summarize_webpage(model: BaseChatModel, webpage_content: str) -> str:
         
     except asyncio.TimeoutError:
         # Timeout during summarization - return original content
-        logging.warning("Summarization timed out after 60 seconds, returning original content")
+        logging.warning(
+            "Summarization timed out after %s seconds, returning original content",
+            f"{timeout_seconds:g}",
+        )
         return webpage_content
     except Exception as e:
         # Other errors during summarization - log and return original content
@@ -583,6 +1082,29 @@ async def get_all_tools(config: RunnableConfig):
     search_api = SearchAPI(get_config_value(configurable.search_api))
     search_tools = await get_search_tool(search_api)
     tools.extend(search_tools)
+
+    # The private knowledge base complements the selected web search provider.
+    if configurable.knowledge_base_url:
+        knowledge_base_search.metadata = {
+            **(knowledge_base_search.metadata or {}),
+            "type": "search",
+            "name": "knowledge_base_search",
+        }
+        knowledge_base_document_window.metadata = {
+            **(knowledge_base_document_window.metadata or {}),
+            "type": "retrieval",
+            "name": "knowledge_base_document_window",
+        }
+        knowledge_base_text_window.metadata = {
+            **(knowledge_base_text_window.metadata or {}),
+            "type": "retrieval",
+            "name": "knowledge_base_text_window",
+        }
+        tools.extend([
+            knowledge_base_search,
+            knowledge_base_document_window,
+            knowledge_base_text_window,
+        ])
     
     # Track existing tool names to prevent conflicts
     existing_tool_names = {
@@ -687,18 +1209,51 @@ def is_token_limit_exceeded(exception: Exception, model_name: str = None) -> boo
     
     # Step 2: Check provider-specific token limit patterns
     if provider == 'openai':
-        return _check_openai_token_limit(exception, error_str)
+        return (
+            _check_openai_token_limit(exception, error_str) or
+            _check_structured_output_truncation(exception, error_str)
+        )
     elif provider == 'anthropic':
-        return _check_anthropic_token_limit(exception, error_str)
+        return (
+            _check_anthropic_token_limit(exception, error_str) or
+            _check_structured_output_truncation(exception, error_str)
+        )
     elif provider == 'gemini':
-        return _check_gemini_token_limit(exception, error_str)
+        return (
+            _check_gemini_token_limit(exception, error_str) or
+            _check_structured_output_truncation(exception, error_str)
+        )
     
-    # Step 3: If provider unknown, check all providers
+    # Step 3: If provider unknown, check all providers and structured-output truncation.
+    # Some OpenAI-compatible providers return a cut-off JSON body for structured
+    # output instead of a provider-specific length error. Treat that as a
+    # retryable budget issue so callers can reduce context before trying again.
     return (
         _check_openai_token_limit(exception, error_str) or
         _check_anthropic_token_limit(exception, error_str) or
-        _check_gemini_token_limit(exception, error_str)
+        _check_gemini_token_limit(exception, error_str) or
+        _check_structured_output_truncation(exception, error_str)
     )
+
+def _check_structured_output_truncation(exception: Exception, error_str: str) -> bool:
+    """Check if structured JSON output was truncated before it could be parsed."""
+    exception_type = str(type(exception)).lower()
+    class_name = exception.__class__.__name__
+    is_pydantic_validation_error = (
+        class_name == "ValidationError" and
+        ("pydantic" in exception_type or "pydantic_core" in exception_type)
+    )
+    if not is_pydantic_validation_error:
+        return False
+
+    truncation_markers = (
+        "invalid json",
+        "json_invalid",
+        "eof while parsing",
+        "unexpected eof",
+        "unterminated string",
+    )
+    return any(marker in error_str for marker in truncation_markers)
 
 def _check_openai_token_limit(exception: Exception, error_str: str) -> bool:
     """Check if exception indicates OpenAI token limit exceeded."""
@@ -912,6 +1467,26 @@ def get_api_key_for_model(model_name: str, config: RunnableConfig):
         elif model_name.startswith("google"):
             return os.getenv("GOOGLE_API_KEY")
         return None
+
+
+def get_chat_model_config(
+    model_name: str,
+    max_tokens: int,
+    config: RunnableConfig,
+) -> dict[str, Any]:
+    """Build runtime configuration for a chat model."""
+    model_config: dict[str, Any] = {
+        "model": model_name,
+        "max_tokens": max_tokens,
+        "api_key": get_api_key_for_model(model_name, config),
+        "tags": ["langsmith:nostream"],
+    }
+    if model_name.lower().startswith("openai:"):
+        openai_base_url = Configuration.from_runnable_config(config).openai_base_url
+        if openai_base_url:
+            model_config["base_url"] = openai_base_url.strip().rstrip("/")
+    return model_config
+
 
 def get_tavily_api_key(config: RunnableConfig):
     """Get Tavily API key from environment or config."""
