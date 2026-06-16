@@ -144,6 +144,34 @@ class Configuration(BaseModel):
             }
         }
     )
+    compression_image_limit: int = Field(
+        default=4,
+        ge=0,
+        le=12,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "slider",
+                "default": 4,
+                "min": 0,
+                "max": 12,
+                "step": 1,
+                "description": "Maximum number of knowledge-base image/table/chart resources to pass to the compression VLM"
+            }
+        }
+    )
+    compression_image_max_bytes: int = Field(
+        default=8_000_000,
+        gt=0,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "number",
+                "default": 8000000,
+                "min": 100000,
+                "max": 50000000,
+                "description": "Maximum bytes per image resource passed to the compression VLM"
+            }
+        }
+    )
     max_researcher_iterations: int = Field(
         default=6,
         metadata={

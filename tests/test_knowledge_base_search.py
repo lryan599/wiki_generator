@@ -8,9 +8,10 @@ from open_deep_research.configuration import SearchAPI
 
 
 class FakeResponse:
-    def __init__(self, payload, status=200):
+    def __init__(self, payload, status=200, headers=None):
         self.payload = payload
         self.status = status
+        self.headers = headers or {}
 
     async def __aenter__(self):
         return self
@@ -19,7 +20,14 @@ class FakeResponse:
         return False
 
     async def text(self):
+        if isinstance(self.payload, bytes):
+            return self.payload.decode("utf-8", errors="replace")
         return self.payload
+
+    async def read(self):
+        if isinstance(self.payload, bytes):
+            return self.payload
+        return self.payload.encode("utf-8")
 
 
 class FakeSession:
@@ -134,13 +142,21 @@ def test_query_workspace_async_requests_and_normalizes_multimodal_data(monkeypat
         "group_id": "doc-1",
         "labels": ["ImageNode"],
         "attributes": {},
-        "url": "http://127.0.0.1:8000/images/example.jpg",
+        "url": (
+            "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
+            "document-elements/image-1/resource"
+        ),
         "caption": "Figure 1",
         "summary": "diagram",
         "score": 0.8,
     }
+    assert result["table_results"][0]["url"] == (
+        "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
+        "document-elements/table-1/resource"
+    )
     assert result["chart_results"][0]["url"] == (
-        "http://127.0.0.1:8000/charts/example.png"
+        "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
+        "document-elements/chart-1/resource"
     )
     assert "metadata" not in result
     assert "elapsed_time" not in result
@@ -233,7 +249,8 @@ def test_query_workspace_async_resolves_image_url(monkeypatch):
     )
 
     assert result["image_results"][0]["url"] == (
-        "http://127.0.0.1:8000/images/example.jpg"
+        "http://127.0.0.1:8000/api/v1/workspaces/workspace/"
+        "document-elements/image-1/resource"
     )
 
 
@@ -377,8 +394,14 @@ def test_document_element_window_requests_context_and_resolves_urls(monkeypatch)
         "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
         "document-elements/image%2Fnode%201/window?k=4"
     ]
-    assert result["center"]["url"] == "http://127.0.0.1:8000/images/center.jpg"
-    assert result["items"][1]["url"] == "http://127.0.0.1:8000/images/center.jpg"
+    assert result["center"]["url"] == (
+        "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
+        "document-elements/image%2Fnode%201/resource"
+    )
+    assert result["items"][1]["url"] == (
+        "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
+        "document-elements/image%2Fnode%201/resource"
+    )
     assert FakeSession.timeouts == [35]
 
 
@@ -410,6 +433,54 @@ def test_text_node_window_uses_text_endpoint(monkeypatch):
         "text-nodes/text-1/window?k=8"
     ]
     assert result["center"]["content"] == "center"
+
+
+def test_document_element_resource_returns_image_data_url(monkeypatch):
+    FakeSession.get_requests = []
+    FakeSession.timeouts = []
+    FakeSession.response = FakeResponse(
+        b"\x89PNG\r\n\x1a\nimage-bytes",
+        headers={"Content-Type": "image/png; charset=binary"},
+    )
+    monkeypatch.setattr(utils.aiohttp, "ClientSession", FakeSession)
+
+    result = asyncio.run(
+        utils.get_document_element_resource_data_url_async(
+            element_node_id="image/node 1",
+            workspace_id="manual workspace",
+            base_url="http://127.0.0.1:8000/",
+            timeout_seconds=20,
+            max_bytes=100,
+        )
+    )
+
+    assert FakeSession.get_requests == [
+        "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
+        "document-elements/image%2Fnode%201/resource"
+    ]
+    assert FakeSession.timeouts == [20]
+    assert result == {
+        "source_id": "image/node 1",
+        "mime_type": "image/png",
+        "data_url": "data:image/png;base64,iVBORw0KGgppbWFnZS1ieXRlcw==",
+    }
+
+
+def test_document_element_resource_rejects_non_image_content(monkeypatch):
+    FakeSession.response = FakeResponse(
+        "plain text",
+        headers={"Content-Type": "text/plain; charset=utf-8"},
+    )
+    monkeypatch.setattr(utils.aiohttp, "ClientSession", FakeSession)
+
+    with pytest.raises(ToolException, match="non-image content type"):
+        asyncio.run(
+            utils.get_document_element_resource_data_url_async(
+                element_node_id="text-1",
+                workspace_id="workspace",
+                base_url="http://127.0.0.1:8000",
+            )
+        )
 
 
 def test_window_tools_preserve_results_as_artifacts(monkeypatch):

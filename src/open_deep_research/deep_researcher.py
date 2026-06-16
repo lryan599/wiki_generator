@@ -1,6 +1,7 @@
 """Main LangGraph implementation for the Deep Research agent."""
 
 import asyncio
+import json
 import logging
 from typing import Literal
 
@@ -31,6 +32,7 @@ from open_deep_research.prompts import (
 )
 from open_deep_research.research import (
     CitationValidationError,
+    ResearchSource,
     StructuredResearch,
     StructuredResearchDraft,
     build_writer_research_context,
@@ -59,6 +61,7 @@ from open_deep_research.utils import (
     anthropic_websearch_called,
     get_all_tools,
     get_chat_model_config,
+    get_document_element_resource_data_url_async,
     get_model_token_limit,
     get_notes_from_tool_calls,
     get_today_str,
@@ -73,6 +76,81 @@ configurable_model = init_chat_model(
     configurable_fields=("model", "max_tokens", "api_key", "base_url"),
 )
 logger = logging.getLogger(__name__)
+
+
+async def _build_compression_image_message(
+    sources: list[ResearchSource],
+    configurable: Configuration,
+) -> HumanMessage | None:
+    """Download relevant image-like sources and package them for the compression VLM."""
+    if (
+        not configurable.knowledge_base_url
+        or not configurable.workspace_id
+        or configurable.compression_image_limit <= 0
+    ):
+        return None
+
+    image_sources = [
+        source
+        for source in sources
+        if source.source_type in {"image", "table", "chart"}
+    ][:configurable.compression_image_limit]
+    if not image_sources:
+        return None
+
+    async def fetch_source(source):
+        element_node_id = source.uuid or source.source_id
+        resource = await get_document_element_resource_data_url_async(
+            element_node_id=element_node_id,
+            workspace_id=configurable.workspace_id or "",
+            base_url=configurable.knowledge_base_url or "",
+            timeout_seconds=configurable.knowledge_base_window_timeout_seconds,
+            max_bytes=configurable.compression_image_max_bytes,
+        )
+        return source, resource
+
+    fetch_results = await asyncio.gather(
+        *(fetch_source(source) for source in image_sources),
+        return_exceptions=True,
+    )
+
+    content_blocks = [{
+        "type": "text",
+        "text": (
+            "以下是可用于生成 findings 的图片、表格或图表证据。"
+            "请结合这些视觉内容及其 source_id/caption/summary/url 生成更准确的 findings；"
+            "如果视觉内容不能直接支持条目或当前 facet，不要强行使用。"
+        ),
+    }]
+    for result in fetch_results:
+        if isinstance(result, Exception):
+            logger.warning("Failed to fetch compression image resource", exc_info=result)
+            continue
+        source, resource = result
+        source_note = {
+            "source_id": source.source_id,
+            "source_type": source.source_type,
+            "caption": source.caption,
+            "summary": source.summary,
+            "description": source.description,
+            "url": source.url,
+        }
+        content_blocks.extend([
+            {
+                "type": "text",
+                "text": "Visual source metadata: "
+                + json.dumps(source_note, ensure_ascii=False),
+            },
+            {
+                "type": "image_url",
+                "image_url": {"url": resource["data_url"]},
+            },
+        ])
+
+    if len(content_blocks) == 1:
+        return None
+    return HumanMessage(content=content_blocks)
+
 
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
     """Analyze user messages and ask clarifying questions if the research scope is unclear.
@@ -562,9 +640,22 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     
     while synthesis_attempts < max_attempts:
         try:
+            evidence_messages = list(filter_messages(
+                researcher_messages,
+                include_types=["tool", "ai"],
+            ))
+            trusted_sources = collect_trusted_sources(evidence_messages)
+            queries_and_tool_calls = collect_queries_and_tool_calls(evidence_messages)
+            image_message = await _build_compression_image_message(
+                trusted_sources,
+                configurable,
+            )
+
             # Create system prompt focused on compression task
             compression_prompt = compress_research_system_prompt.format(date=get_today_str())
             messages = [SystemMessage(content=compression_prompt)] + researcher_messages
+            if image_message:
+                messages.append(image_message)
             
             # Execute compression with explicit finding-to-source relationships.
             response = await synthesizer_model.with_structured_output(
@@ -573,18 +664,13 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
             structured_research = coerce_structured_research_draft(
                 response,
             )
-            evidence_messages = list(filter_messages(
-                researcher_messages,
-                include_types=["tool", "ai"],
-            ))
-            trusted_sources = collect_trusted_sources(evidence_messages)
             trusted_findings = keep_findings_with_trusted_sources(
                 structured_research.findings,
                 trusted_sources,
             )
             structured_research = StructuredResearch(
                 research_topic=state.get("research_topic", ""),
-                queries_and_tool_calls=collect_queries_and_tool_calls(evidence_messages),
+                queries_and_tool_calls=queries_and_tool_calls,
                 findings=trusted_findings,
                 sources=keep_sources_used_by_findings(
                     trusted_sources,

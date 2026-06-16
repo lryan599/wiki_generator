@@ -219,6 +219,7 @@ Do not invent or modify source IDs.
 6. Remove duplicate or obviously irrelevant information.
 7. Do not turn weak hints or unsupported assumptions into findings.
 8. Do not invent source IDs, URLs, UUIDs, titles, captions, parameter values, ranges, or metadata.
+9. You may receive extra image_url blocks for image/table/chart evidence. Use the adjacent "Visual source metadata" text to identify the exact source_id for each image. Only cite a visual source when the visible content, caption, summary, or nearby text directly supports the finding.
 </Guidelines>
 
 <Structured Output Rules>

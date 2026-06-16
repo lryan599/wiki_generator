@@ -1,13 +1,14 @@
 """Utility functions and helpers for the Deep Research agent."""
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import quote, urlparse
 
 import aiohttp
 from langchain.chat_models import init_chat_model
@@ -204,11 +205,31 @@ def _validate_workspace_api_base_url(base_url: str) -> str:
     return normalized_url
 
 
-def _absolute_resource_url(url: Any, base_url: str) -> str | None:
-    """Convert a non-empty resource URL to an absolute URL."""
-    if not isinstance(url, str) or not url:
-        return None
-    return urljoin(f"{base_url}/", url.lstrip("/"))
+def _document_element_resource_url(
+    element_node_id: str,
+    workspace_id: str,
+    base_url: str,
+) -> str:
+    """Build the public Resource API URL for a document element."""
+    return (
+        f"{base_url}"
+        f"/api/v1/workspaces/{quote(workspace_id, safe='')}"
+        f"/document-elements/{quote(element_node_id, safe='')}/resource"
+    )
+
+
+def _is_multimodal_element(element: dict[str, Any]) -> bool:
+    """Return whether an element should be referenced through the Resource API."""
+    modal_type = str(element.get("modal_type") or "").upper()
+    if modal_type in {"IMAGE", "TABLE", "CHART"}:
+        return True
+
+    labels = {
+        str(label)
+        for label in element.get("labels", [])
+        if isinstance(label, str)
+    }
+    return bool(labels & {"ImageNode", "TableNode", "ChartNode"})
 
 
 def _select_fields(result: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
@@ -223,6 +244,7 @@ def _select_fields(result: dict[str, Any], fields: tuple[str, ...]) -> dict[str,
 def _normalize_query_result(
     query_result: dict[str, Any],
     query: str,
+    workspace_id: str,
     base_url: str,
 ) -> dict[str, Any]:
     """Reduce a Query API response to evidence fields useful to the researcher."""
@@ -260,9 +282,13 @@ def _normalize_query_result(
             if not isinstance(result, dict):
                 continue
             selected = _select_fields(result, multimodal_fields)
-            resource_url = _absolute_resource_url(selected.get("url"), base_url)
-            if resource_url:
-                selected["url"] = resource_url
+            element_id = selected.get("uuid")
+            if isinstance(element_id, str) and element_id:
+                selected["url"] = _document_element_resource_url(
+                    element_id,
+                    workspace_id,
+                    base_url,
+                )
             normalized[result_type].append(selected)
 
     return normalized
@@ -325,9 +351,10 @@ def _limit_knowledge_base_results(
 
 def _resolve_document_element_urls(
     window_result: dict[str, Any],
+    workspace_id: str,
     base_url: str,
 ) -> dict[str, Any]:
-    """Convert relative image and table URLs in a document window to absolute URLs."""
+    """Convert multimodal element URLs in a window to Resource API URLs."""
     elements = []
     center = window_result.get("center")
     if isinstance(center, dict):
@@ -338,9 +365,13 @@ def _resolve_document_element_urls(
         elements.extend(item for item in items if isinstance(item, dict))
 
     for element in elements:
-        element_url = element.get("url")
-        if isinstance(element_url, str) and element_url:
-            element["url"] = urljoin(f"{base_url}/", element_url.lstrip("/"))
+        element_id = element.get("uuid")
+        if isinstance(element_id, str) and element_id and _is_multimodal_element(element):
+            element["url"] = _document_element_resource_url(
+                element_id,
+                workspace_id,
+                base_url,
+            )
 
     return window_result
 
@@ -393,7 +424,11 @@ async def _get_workspace_window_async(
     if not isinstance(window_result, dict):
         raise ToolException("Window API returned an invalid response object.")
 
-    return _resolve_document_element_urls(window_result, normalized_base_url)
+    return _resolve_document_element_urls(
+        window_result,
+        normalized_workspace_id,
+        normalized_base_url,
+    )
 
 
 async def get_document_element_window_async(
@@ -430,6 +465,74 @@ async def get_text_node_window_async(
         k=k,
         timeout_seconds=timeout_seconds,
     )
+
+
+async def get_document_element_resource_data_url_async(
+    element_node_id: str,
+    workspace_id: str,
+    base_url: str,
+    timeout_seconds: float = 120.0,
+    max_bytes: int = 8_000_000,
+) -> dict[str, str]:
+    """Fetch a document element resource and return it as an image data URL."""
+    normalized_node_id = element_node_id.strip()
+    normalized_workspace_id = workspace_id.strip()
+    normalized_base_url = _validate_workspace_api_base_url(base_url)
+    if not normalized_node_id:
+        raise ToolException("element_node_id must not be empty.")
+    if not normalized_workspace_id:
+        raise ToolException("workspace_id must not be empty.")
+
+    endpoint = (
+        f"{normalized_base_url}"
+        f"/api/v1/workspaces/{quote(normalized_workspace_id, safe='')}"
+        f"/document-elements/{quote(normalized_node_id, safe='')}/resource"
+    )
+    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(endpoint) as response:
+                if response.status >= 400:
+                    response_text = await response.text()
+                    raise ToolException(
+                        f"Resource API request failed with HTTP {response.status}: "
+                        f"{response_text[:500]}"
+                    )
+                content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
+                if not content_type.startswith("image/"):
+                    raise ToolException(
+                        f"Resource API returned non-image content type: {content_type or 'unknown'}"
+                    )
+                content_length = response.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        declared_size = int(content_length)
+                    except ValueError:
+                        declared_size = None
+                    if declared_size and declared_size > max_bytes:
+                        raise ToolException(
+                            f"Resource image is too large: {declared_size} bytes exceeds {max_bytes}."
+                        )
+                payload = await response.read()
+    except asyncio.TimeoutError as exc:
+        raise ToolException(
+            f"Resource API request timed out after {timeout_seconds:g} seconds."
+        ) from exc
+    except aiohttp.ClientError as exc:
+        raise ToolException(f"Resource API request failed: {exc}") from exc
+
+    if len(payload) > max_bytes:
+        raise ToolException(
+            f"Resource image is too large: {len(payload)} bytes exceeds {max_bytes}."
+        )
+
+    encoded = base64.b64encode(payload).decode("ascii")
+    return {
+        "source_id": normalized_node_id,
+        "mime_type": content_type,
+        "data_url": f"data:{content_type};base64,{encoded}",
+    }
 
 
 async def query_workspace_async(
@@ -492,6 +595,7 @@ async def query_workspace_async(
     return _normalize_query_result(
         query_result,
         query=normalized_query,
+        workspace_id=normalized_workspace_id,
         base_url=normalized_base_url,
     )
 

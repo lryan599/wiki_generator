@@ -11,6 +11,8 @@ def test_configuration_loads_separate_openai_and_knowledge_base_urls(monkeypatch
     monkeypatch.setenv("WORKSPACE_ID", "workspace")
     monkeypatch.setenv("KNOWLEDGE_BASE_QUERY_TIMEOUT_SECONDS", "45")
     monkeypatch.setenv("KNOWLEDGE_BASE_WINDOW_TIMEOUT_SECONDS", "30")
+    monkeypatch.setenv("COMPRESSION_IMAGE_LIMIT", "6")
+    monkeypatch.setenv("COMPRESSION_IMAGE_MAX_BYTES", "1234567")
     monkeypatch.setenv("SUMMARIZATION_TIMEOUT_SECONDS", "15")
 
     configurable = Configuration.from_runnable_config({})
@@ -20,6 +22,8 @@ def test_configuration_loads_separate_openai_and_knowledge_base_urls(monkeypatch
     assert configurable.workspace_id == "workspace"
     assert configurable.knowledge_base_query_timeout_seconds == 45
     assert configurable.knowledge_base_window_timeout_seconds == 30
+    assert configurable.compression_image_limit == 6
+    assert configurable.compression_image_max_bytes == 1234567
     assert configurable.summarization_timeout_seconds == 15
 
 
