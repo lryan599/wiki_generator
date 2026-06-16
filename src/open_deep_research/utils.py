@@ -6,7 +6,7 @@ import logging
 import os
 import warnings
 from datetime import datetime, timedelta, timezone
-from typing import Annotated, Any, Dict, List, Literal, Optional
+from typing import Annotated, Any, Dict, List, Literal
 from urllib.parse import quote, urljoin, urlparse
 
 import aiohttp
@@ -749,7 +749,7 @@ def think_tool(reflection: str) -> str:
 async def get_mcp_access_token(
     supabase_token: str,
     base_mcp_url: str,
-) -> Optional[Dict[str, Any]]:
+) -> Dict[str, Any] | None:
     """Exchange Supabase token for MCP access token using OAuth token exchange.
     
     Args:

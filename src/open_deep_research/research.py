@@ -6,7 +6,6 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-
 SourceType = Literal["web", "text", "image", "table", "chart", "other"]
 
 
