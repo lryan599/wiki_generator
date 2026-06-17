@@ -54,6 +54,10 @@ The messages that have been exchanged so far between yourself and the user are:
 {messages}
 </Messages>
 
+The input may include a <WikiEntryInput> block. If present:
+- wiki_entry_name is the exact target entry name and should be preserved as the page subject.
+- wiki_entry_description is an optional weak hint from a batch file. It may be missing, incomplete, or inaccurate. Use it to disambiguate retrieval when helpful, but do not treat it as source evidence or ground truth.
+
 Today's date is {date}.
 
 You will return a single research brief that will be used to guide the research.
