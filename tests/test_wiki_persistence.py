@@ -43,6 +43,43 @@ def test_save_markdown_report_sanitizes_and_deduplicates(tmp_path):
     assert chinese_path.name == "H13钢.md"
 
 
+def test_save_markdown_report_adds_metadata_and_increments_version(tmp_path):
+    metadata = {
+        "confidence_score": 0.82,
+        "confidence_level": "high",
+        "confidence_basis": {
+            "cited_sources": 6,
+            "source_quality_score": 0.80,
+            "freshness_score": 0.90,
+            "evidence_coverage_score": 0.85,
+        },
+    }
+
+    first_path = save_markdown_report(
+        "# Wiki",
+        tmp_path,
+        title_hint="H13钢",
+        metadata=metadata,
+    )
+    second_path = save_markdown_report(
+        "# Wiki 2",
+        tmp_path,
+        title_hint="H13钢",
+        metadata=metadata,
+    )
+
+    first_content = first_path.read_text(encoding="utf-8")
+    second_content = second_path.read_text(encoding="utf-8")
+
+    assert first_path.name == "H13钢.md"
+    assert second_path.name == "H13钢-1.md"
+    assert first_content.startswith('---\nversion: "v1"\n')
+    assert 'generated_at: "' in first_content
+    assert "confidence_score: 0.82" in first_content
+    assert "confidence_basis:" in first_content
+    assert second_content.startswith('---\nversion: "v2"\n')
+
+
 def test_slugify_filename_preserves_chinese_title():
     assert slugify_filename("压铸工艺") == "压铸工艺"
     assert slugify_filename("die casting / velocity") == "die casting - velocity"
@@ -266,5 +303,9 @@ def test_wiki_writer_saves_markdown_in_thread(monkeypatch, tmp_path):
     assert calls
     assert calls[0][0] is deep_researcher.save_markdown_report
     assert calls[0][1][3] == "H13钢"
-    assert result["final_report"] == "# Wiki"
+    assert calls[0][2]["return_content"] is True
+    assert calls[0][2]["metadata"]["confidence_score"] == 0.0
+    assert result["final_report"].startswith('---\nversion: "v1"\n')
+    assert "confidence_level: \"very_low\"" in result["final_report"]
+    assert "# Wiki" in result["final_report"]
     assert result["final_report_path"] == str(tmp_path / "H13钢.md")

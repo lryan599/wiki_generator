@@ -2,11 +2,13 @@
 
 import json
 import re
+from datetime import date, datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
 SourceType = Literal["web", "text", "image", "table", "chart", "other"]
+ConfidenceLevel = Literal["very_high", "high", "medium", "low", "very_low"]
 
 
 class CitationValidationError(ValueError):
@@ -79,6 +81,29 @@ class StructuredResearchDraft(BaseModel):
     """Model-produced finding draft before source IDs are verified."""
 
     findings: list[ResearchFinding] = Field(default_factory=list)
+
+
+class WikiConfidence(BaseModel):
+    """Deterministic confidence metadata for a generated wiki page."""
+
+    confidence_score: float
+    confidence_level: ConfidenceLevel
+    cited_sources: int
+    source_quality_score: float
+    freshness_score: float
+    evidence_coverage_score: float
+
+    def as_markdown_metadata(self) -> dict[str, Any]:
+        return {
+            "confidence_score": self.confidence_score,
+            "confidence_level": self.confidence_level,
+            "confidence_basis": {
+                "cited_sources": self.cited_sources,
+                "source_quality_score": self.source_quality_score,
+                "freshness_score": self.freshness_score,
+                "evidence_coverage_score": self.evidence_coverage_score,
+            },
+        }
 
 
 def render_structured_research(research: StructuredResearch) -> str:
@@ -467,34 +492,254 @@ def _source_evidence_excerpt(source: ResearchSource) -> str:
     )
 
 
+def _parse_citation_aliases(raw_aliases: str) -> list[str]:
+    aliases = [
+        alias
+        for alias in re.split(r"[,，、;\s]+", raw_aliases.strip())
+        if alias
+    ]
+    invalid_aliases = [
+        alias for alias in aliases if not re.fullmatch(r"S\d+", alias)
+    ]
+    if invalid_aliases:
+        raise CitationValidationError(
+            f"Invalid citation IDs: {', '.join(invalid_aliases)}"
+        )
+    return aliases
+
+
+def extract_citation_aliases(wiki_content: str) -> list[str]:
+    """Extract citation aliases from wiki body while preserving first-use order."""
+    aliases = [
+        alias
+        for group in re.finditer(r"\[\[([^\]]+)\]\]", wiki_content)
+        for alias in _parse_citation_aliases(group.group(1))
+    ]
+    return list(dict.fromkeys(aliases))
+
+
+def _source_metadata_text(source: ResearchSource) -> str:
+    values: list[str] = [
+        source.source_type,
+        source.title or "",
+        source.name or "",
+        source.caption or "",
+        source.url or "",
+    ]
+    values.extend(source.labels)
+    for key, value in source.attributes.items():
+        values.append(str(key))
+        if isinstance(value, (str, int, float)):
+            values.append(str(value))
+        elif isinstance(value, list):
+            values.extend(str(item) for item in value if isinstance(item, (str, int, float)))
+    return " ".join(values).lower()
+
+
+def _source_category(source: ResearchSource) -> str:
+    metadata = _source_metadata_text(source)
+    keyword_groups = [
+        ("standard", ("standard", "标准", "gb/t", "gb ", "iso", "astm", "jb/t", "jis")),
+        ("book", ("book", "handbook", "manual", "教材", "手册", "书籍", "专著")),
+        ("paper", ("paper", "journal", "conference", "论文", "期刊", "文献", "学报")),
+        ("internal_doc", ("internal", "工艺文件", "企业资料", "知识库文档", "规程")),
+        ("wiki", ("wiki", "百科", "条目")),
+    ]
+    for category, keywords in keyword_groups:
+        if any(keyword in metadata for keyword in keywords):
+            return category
+    if source.source_type == "web":
+        return "web"
+    return "unknown_kb"
+
+
+def _source_quality_for_category(category: str) -> float:
+    return {
+        "standard": 0.95,
+        "book": 0.88,
+        "paper": 0.82,
+        "internal_doc": 0.75,
+        "wiki": 0.68,
+        "web": 0.55,
+        "unknown_kb": 0.65,
+    }.get(category, 0.65)
+
+
+def _source_weight_for_category(category: str) -> float:
+    return {
+        "standard": 1.2,
+        "book": 1.1,
+        "paper": 1.05,
+        "internal_doc": 1.0,
+        "wiki": 0.9,
+        "web": 0.9,
+        "unknown_kb": 0.9,
+    }.get(category, 0.9)
+
+
+def _source_last_revision_year(source: ResearchSource) -> int | None:
+    date_key_patterns = (
+        "last_modified",
+        "modified",
+        "updated",
+        "revision",
+        "publish",
+        "created",
+        "date",
+        "year",
+        "修订",
+        "更新",
+        "发布",
+        "年份",
+    )
+    candidates: list[Any] = []
+    for key, value in source.attributes.items():
+        normalized_key = str(key).lower()
+        if any(pattern in normalized_key for pattern in date_key_patterns):
+            candidates.append(value)
+    for candidate in candidates:
+        if isinstance(candidate, int) and 1900 <= candidate <= 2100:
+            return candidate
+        match = re.search(r"(19|20)\d{2}", str(candidate))
+        if match:
+            return int(match.group(0))
+    return None
+
+
+def _freshness_score(source: ResearchSource, now: date) -> float:
+    category = _source_category(source)
+    year = _source_last_revision_year(source)
+    if year is None:
+        score = 0.75
+    else:
+        age = max(now.year - year, 0)
+        if age <= 2:
+            score = 1.0
+        elif age <= 5:
+            score = 0.92
+        elif age <= 10:
+            score = 0.82
+        elif age <= 20:
+            score = 0.68
+        else:
+            score = 0.55
+
+    if category == "standard":
+        score = max(score, 0.80)
+    elif category == "book":
+        score = max(score, 0.70)
+    return score
+
+
+def _weighted_average(values: list[tuple[float, float]], default: float) -> float:
+    total_weight = sum(weight for _, weight in values)
+    if total_weight <= 0:
+        return default
+    return sum(value * weight for value, weight in values) / total_weight
+
+
+def _coverage_score(sources: list[ResearchSource]) -> float:
+    cited_sources = len(sources)
+    if cited_sources >= 8:
+        score = 1.0
+    elif cited_sources >= 5:
+        score = 0.85
+    elif cited_sources >= 3:
+        score = 0.70
+    elif cited_sources == 2:
+        score = 0.55
+    elif cited_sources == 1:
+        score = 0.40
+    else:
+        return 0.0
+
+    source_types = {source.source_type for source in sources}
+    categories = {_source_category(source) for source in sources}
+    if (
+        len(source_types & {"text", "image", "table", "chart"}) >= 2
+        and categories & {"standard", "book", "paper"}
+    ):
+        score = min(score + 0.05, 1.0)
+    return score
+
+
+def _confidence_level(score: float) -> ConfidenceLevel:
+    if score >= 0.85:
+        return "very_high"
+    if score >= 0.75:
+        return "high"
+    if score >= 0.60:
+        return "medium"
+    if score >= 0.45:
+        return "low"
+    return "very_low"
+
+
+def calculate_wiki_confidence(
+    wiki_content: str,
+    citation_sources: dict[str, ResearchSource],
+    now: date | datetime | None = None,
+) -> WikiConfidence:
+    """Calculate deterministic confidence metadata from cited sources."""
+    aliases = extract_citation_aliases(wiki_content)
+    cited_sources = [
+        citation_sources[alias]
+        for alias in aliases
+        if alias in citation_sources
+    ]
+    if isinstance(now, datetime):
+        current_date = now.date()
+    else:
+        current_date = now or date.today()
+
+    if not cited_sources:
+        return WikiConfidence(
+            confidence_score=0.0,
+            confidence_level="very_low",
+            cited_sources=0,
+            source_quality_score=0.0,
+            freshness_score=0.0,
+            evidence_coverage_score=0.0,
+        )
+
+    categories = [_source_category(source) for source in cited_sources]
+    quality_score = _weighted_average(
+        [
+            (
+                _source_quality_for_category(category),
+                _source_weight_for_category(category),
+            )
+            for category in categories
+        ],
+        default=0.65,
+    )
+    freshness_score = sum(
+        _freshness_score(source, current_date) for source in cited_sources
+    ) / len(cited_sources)
+    coverage_score = _coverage_score(cited_sources)
+    final_score = (
+        0.65 * quality_score
+        + 0.25 * freshness_score
+        + 0.10 * coverage_score
+    )
+
+    return WikiConfidence(
+        confidence_score=round(final_score, 2),
+        confidence_level=_confidence_level(final_score),
+        cited_sources=len(cited_sources),
+        source_quality_score=round(quality_score, 2),
+        freshness_score=round(freshness_score, 2),
+        evidence_coverage_score=round(coverage_score, 2),
+    )
+
+
 def finalize_wiki_citations(
     wiki_content: str,
     citation_sources: dict[str, ResearchSource],
 ) -> str:
     """Validate inline citation aliases and append a program-generated source list."""
     referenced_aliases: list[str] = []
-
-    def parse_citation_aliases(raw_aliases: str) -> list[str]:
-        aliases = [
-            alias
-            for alias in re.split(r"[,，、;\s]+", raw_aliases.strip())
-            if alias
-        ]
-        invalid_aliases = [
-            alias for alias in aliases if not re.fullmatch(r"S\d+", alias)
-        ]
-        if invalid_aliases:
-            raise CitationValidationError(
-                f"Invalid citation IDs: {', '.join(invalid_aliases)}"
-            )
-        return aliases
-
-    citation_groups = list(re.finditer(r"\[\[([^\]]+)\]\]", wiki_content))
-    citation_aliases = [
-        alias
-        for group in citation_groups
-        for alias in parse_citation_aliases(group.group(1))
-    ]
+    citation_aliases = extract_citation_aliases(wiki_content)
     unknown_aliases = sorted({
         alias for alias in citation_aliases if alias not in citation_sources
     })

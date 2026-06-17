@@ -1,4 +1,5 @@
 import pytest
+from datetime import date
 from langchain_core.messages import AIMessage, ToolMessage
 from pydantic import ValidationError
 
@@ -9,6 +10,7 @@ from open_deep_research.research import (
     StructuredResearch,
     StructuredResearchDraft,
     build_writer_research_context,
+    calculate_wiki_confidence,
     collect_queries_and_tool_calls,
     collect_trusted_sources,
     coerce_structured_research,
@@ -326,6 +328,43 @@ def test_finalize_wiki_citations_renders_readable_text_and_table_sources():
         "| 钢号 | 抗拉强度 | 屈服强度 | | H13 | 1500 MPa | 1200 MPa |"
         in finalized
     )
+
+
+def test_calculate_wiki_confidence_uses_source_quality_freshness_and_coverage():
+    citation_sources = {
+        "S1": ResearchSource(
+            source_id="standard-1",
+            source_type="text",
+            labels=["TextNode", "GB/T 标准"],
+            attributes={"revision_date": "2024-01-01"},
+        ),
+        "S2": ResearchSource(
+            source_id="book-1",
+            source_type="table",
+            labels=["TableNode"],
+            attributes={"source_type": "手册", "updated_at": "2018"},
+            body="| a | b |",
+        ),
+        "S3": ResearchSource(
+            source_id="paper-1",
+            source_type="image",
+            labels=["ImageNode"],
+            attributes={"doc_type": "论文", "year": 2020},
+        ),
+    }
+
+    confidence = calculate_wiki_confidence(
+        "Claim one [[S1,S2]]. Claim two [[S3]].",
+        citation_sources,
+        now=date(2026, 6, 17),
+    )
+
+    assert confidence.cited_sources == 3
+    assert confidence.source_quality_score >= 0.80
+    assert confidence.freshness_score >= 0.80
+    assert confidence.evidence_coverage_score == 0.75
+    assert confidence.confidence_level in {"high", "very_high"}
+    assert confidence.as_markdown_metadata()["confidence_basis"]["cited_sources"] == 3
 
 
 @pytest.mark.parametrize(

@@ -21,6 +21,7 @@ from langgraph.types import Command
 from open_deep_research.configuration import (
     Configuration,
 )
+from open_deep_research.persistence import save_markdown_report
 from open_deep_research.prompts import (
     clarify_with_user_instructions,
     compress_research_simple_human_message,
@@ -30,13 +31,13 @@ from open_deep_research.prompts import (
     research_system_prompt,
     transform_messages_into_research_topic_prompt,
 )
-from open_deep_research.persistence import save_markdown_report
 from open_deep_research.research import (
     CitationValidationError,
     ResearchSource,
     StructuredResearch,
     StructuredResearchDraft,
     build_writer_research_context,
+    calculate_wiki_confidence,
     coerce_structured_research,
     coerce_structured_research_draft,
     collect_queries_and_tool_calls,
@@ -842,13 +843,24 @@ async def wiki_writer(state: AgentState, config: RunnableConfig):
 
             final_report_path = None
             if configurable.save_wiki_markdown:
-                final_report_path = str(await asyncio.to_thread(
+                confidence_metadata = calculate_wiki_confidence(
+                    final_report_content,
+                    citation_sources,
+                ).as_markdown_metadata()
+                save_result = await asyncio.to_thread(
                     save_markdown_report,
                     final_report_content,
                     configurable.wiki_output_dir,
                     configurable.wiki_output_filename,
                     _get_user_title_hint(state),
-                ))
+                    metadata=confidence_metadata,
+                    return_content=True,
+                )
+                saved_path, final_report_content = save_result
+                final_report_path = str(saved_path)
+                final_report = final_report.model_copy(
+                    update={"content": final_report_content}
+                )
 
             # Return successful report generation
             return {
