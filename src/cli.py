@@ -12,6 +12,14 @@ from typing import Any
 
 from dotenv import load_dotenv
 from langgraph_sdk import get_client
+from rich.progress import (
+    BarColumn,
+    Progress,
+    TaskProgressColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
 
 from open_deep_research.deep_researcher import deep_researcher
 from open_deep_research.persistence import save_markdown_report, slugify_filename
@@ -241,6 +249,7 @@ async def run_batch(
     assistant_id: str = "Deep Researcher",
     api_key: str | None = None,
     input_format: str = "auto",
+    show_progress: bool = True,
 ) -> list[dict[str, Any]]:
     """Run the wiki pipeline for all records in an input file."""
     if limit is not None and limit < 0:
@@ -264,6 +273,7 @@ async def run_batch(
         api_url=api_url,
         assistant_id=assistant_id,
         api_key=api_key,
+        show_progress=show_progress,
     )
 
 
@@ -277,11 +287,12 @@ async def run_batch_records(
     api_url: str | None = None,
     assistant_id: str = "Deep Researcher",
     api_key: str | None = None,
+    show_progress: bool = True,
 ) -> list[dict[str, Any]]:
     """Run the wiki pipeline for in-memory batch records."""
     semaphore = asyncio.Semaphore(max(max_concurrency, 1))
 
-    async def run_one(index: int, record: dict[str, Any]) -> dict[str, Any]:
+    async def run_one(index: int, record: dict[str, Any]) -> tuple[int, dict[str, Any]]:
         item_id = _record_id(record, index)
         user_content = _extract_user_content(record)
         item_config = {**(config or {}), **record.get("config", {})}
@@ -311,7 +322,7 @@ async def run_batch_records(
                         else None
                     ),
                 )
-                return {
+                return index, {
                     "id": item_id,
                     "name": str(wiki_entry_name) if wiki_entry_name else None,
                     "ok": True,
@@ -321,17 +332,42 @@ async def run_batch_records(
                     "final_report": final_state.get("final_report"),
                 }
             except Exception as exc:
-                return {
+                return index, {
                     "id": item_id,
                     "ok": False,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 }
 
-    results = await asyncio.gather(*[
-        run_one(index, record)
+    tasks = [
+        asyncio.create_task(run_one(index, record))
         for index, record in enumerate(records, start=1)
-    ])
+    ]
+    results_by_index: list[dict[str, Any] | None] = [None] * len(tasks)
+
+    if show_progress and tasks:
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            progress_task = progress.add_task("Generating wiki batch", total=len(tasks))
+            for task in asyncio.as_completed(tasks):
+                index, result = await task
+                results_by_index[index - 1] = result
+                progress.advance(progress_task)
+    else:
+        for index, result in await asyncio.gather(*tasks):
+            results_by_index[index - 1] = result
+
+    results = [
+        result
+        for result in results_by_index
+        if result is not None
+    ]
 
     results_path.parent.mkdir(parents=True, exist_ok=True)
     with results_path.open("w", encoding="utf-8", newline="\n") as file:
@@ -374,6 +410,11 @@ def main() -> None:
     parser.add_argument("--assistant-id", default="Deep Researcher", help="LangGraph assistant/graph ID")
     parser.add_argument("--api-key", help="LangGraph API key. Defaults to LANGGRAPH_API_KEY")
     parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable the batch progress bar",
+    )
+    parser.add_argument(
         "--config-json",
         default="{}",
         help="JSON object merged after --config-file into each LangGraph configurable config",
@@ -407,6 +448,7 @@ def main() -> None:
             api_url=args.api_url,
             assistant_id=args.assistant_id,
             api_key=args.api_key,
+            show_progress=not args.no_progress,
         ))
     else:
         if args.input is None:
@@ -422,6 +464,7 @@ def main() -> None:
             assistant_id=args.assistant_id,
             api_key=args.api_key,
             input_format=args.input_format,
+            show_progress=not args.no_progress,
         ))
     ok_count = sum(1 for result in results if result["ok"])
     print(f"Finished {len(results)} item(s): {ok_count} succeeded, {len(results) - ok_count} failed")

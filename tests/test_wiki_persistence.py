@@ -312,6 +312,7 @@ def test_main_passes_limit_and_concurrency_to_batch(monkeypatch, tmp_path):
         "4",
         "--input-format",
         "wiki-entries",
+        "--no-progress",
     ])
 
     cli.main()
@@ -320,6 +321,7 @@ def test_main_passes_limit_and_concurrency_to_batch(monkeypatch, tmp_path):
     assert calls[0]["limit"] == 5
     assert calls[0]["max_concurrency"] == 4
     assert calls[0]["input_format"] == "wiki-entries"
+    assert calls[0]["show_progress"] is False
 
 
 def test_run_batch_records_passes_langgraph_api_options(monkeypatch, tmp_path):
