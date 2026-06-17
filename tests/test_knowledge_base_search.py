@@ -504,6 +504,15 @@ def test_missing_document_element_resource_error_is_skippable():
     )
 
 
+def test_non_image_document_element_resource_error_is_skippable():
+    error = ToolException("Resource API returned non-image content type: text/plain")
+
+    assert utils.is_non_image_document_element_resource_error(error)
+    assert not utils.is_non_image_document_element_resource_error(
+        ToolException("Resource API request failed with HTTP 404")
+    )
+
+
 def test_window_tools_preserve_results_as_artifacts(monkeypatch):
     async def fake_document_window_async(**kwargs):
         return {

@@ -492,6 +492,36 @@ def _source_evidence_excerpt(source: ResearchSource) -> str:
     )
 
 
+def _resource_api_prefix_from_url(url: str) -> str | None:
+    marker = "/document-elements/"
+    if marker not in url:
+        return None
+    prefix = url.split(marker, 1)[0]
+    return prefix if "/api/v1/workspaces/" in prefix else None
+
+
+def _source_resource_url(
+    source: ResearchSource,
+    citation_sources: dict[str, ResearchSource],
+) -> str | None:
+    """Return or derive a Resource API URL for a document element source."""
+    if source.url:
+        return source.url
+    if source.source_type not in {"text", "image", "table", "chart"}:
+        return None
+
+    element_id = source.uuid or source.source_id
+    if not element_id:
+        return None
+
+    for candidate in citation_sources.values():
+        if candidate.url:
+            prefix = _resource_api_prefix_from_url(candidate.url)
+            if prefix:
+                return f"{prefix}/document-elements/{element_id}/resource"
+    return None
+
+
 def _parse_citation_aliases(raw_aliases: str) -> list[str]:
     aliases = [
         alias
@@ -781,15 +811,14 @@ def finalize_wiki_citations(
         source = citation_sources[alias]
         label = _source_label(source)
         source_identity = source.uuid or source.source_id
-        if source.url:
+        source_url = _source_resource_url(source, citation_sources)
+        if source_url:
             source_lines.append(
-                f"- {alias}: [{label}]({source.url}) (`{source_identity}`)"
+                f"- {alias}: [{label}]({source_url}) (`{source_identity}`)"
             )
         else:
-            evidence_excerpt = _source_evidence_excerpt(source)
-            detail = f" - {evidence_excerpt}" if evidence_excerpt else ""
             source_lines.append(
-                f"- {alias}: {label} (`{source_identity}`){detail}"
+                f"- {alias}: {label} (`{source_identity}`)"
             )
 
     return finalized + "\n\n## Sources\n" + "\n".join(source_lines)

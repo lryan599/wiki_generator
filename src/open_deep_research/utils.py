@@ -12,6 +12,7 @@ from urllib.parse import quote, urlparse
 
 import aiohttp
 from langchain.chat_models import init_chat_model
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (
     AIMessage,
@@ -19,6 +20,7 @@ from langchain_core.messages import (
     MessageLikeRepresentation,
     filter_messages,
 )
+from langchain_core.outputs import LLMResult
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import (
     BaseTool,
@@ -35,6 +37,75 @@ from tavily import AsyncTavilyClient
 from open_deep_research.configuration import Configuration, SearchAPI
 from open_deep_research.prompts import summarize_webpage_prompt
 from open_deep_research.state import ResearchComplete, Summary
+
+
+class OpenAICompatibleUsageMetadataCallback(BaseCallbackHandler):
+    """Populate standard usage_metadata from OpenAI-compatible token_usage.
+
+    Some structured-output paths preserve provider usage in response_metadata or
+    generation_info but do not copy it to AIMessage.usage_metadata. LangSmith's
+    LangChain tracer only aggregates usage_metadata, so this keeps tracing accurate
+    without changing model calls or structured parsing.
+    """
+
+    run_inline = True
+
+    def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
+        for generation_batch in response.generations:
+            for generation in generation_batch:
+                message = getattr(generation, "message", None)
+                if not isinstance(message, AIMessage) or message.usage_metadata:
+                    continue
+
+                token_usage = None
+                generation_info = getattr(generation, "generation_info", None)
+                if isinstance(generation_info, dict):
+                    token_usage = generation_info.get("token_usage")
+                if token_usage is None:
+                    response_metadata = getattr(message, "response_metadata", None)
+                    if isinstance(response_metadata, dict):
+                        token_usage = response_metadata.get("token_usage")
+
+                usage_metadata = _openai_token_usage_to_usage_metadata(token_usage)
+                if usage_metadata:
+                    message.usage_metadata = usage_metadata
+
+
+OPENAI_COMPATIBLE_USAGE_METADATA_CALLBACK = OpenAICompatibleUsageMetadataCallback()
+
+
+def _openai_token_usage_to_usage_metadata(token_usage: Any) -> dict[str, Any] | None:
+    """Convert OpenAI-compatible token_usage into LangChain usage_metadata."""
+    if not isinstance(token_usage, dict):
+        return None
+
+    input_tokens = token_usage.get("prompt_tokens")
+    output_tokens = token_usage.get("completion_tokens")
+    total_tokens = token_usage.get("total_tokens")
+    if input_tokens is None and output_tokens is None and total_tokens is None:
+        return None
+
+    input_tokens = int(input_tokens or 0)
+    output_tokens = int(output_tokens or 0)
+    total_tokens = int(total_tokens if total_tokens is not None else input_tokens + output_tokens)
+    usage_metadata: dict[str, Any] = {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total_tokens,
+    }
+
+    prompt_details = token_usage.get("prompt_tokens_details") or {}
+    cached_tokens = prompt_details.get("cached_tokens")
+    if cached_tokens is not None:
+        usage_metadata["input_token_details"] = {"cache_read": int(cached_tokens)}
+
+    completion_details = token_usage.get("completion_tokens_details") or {}
+    reasoning_tokens = completion_details.get("reasoning_tokens")
+    if reasoning_tokens is not None:
+        usage_metadata["output_token_details"] = {"reasoning": int(reasoning_tokens)}
+
+    return usage_metadata
+
 
 ##########################
 # Tavily Search Tool Utils
@@ -573,6 +644,11 @@ def is_missing_document_element_resource_error(error: BaseException) -> bool:
         "Resource API request failed with HTTP 404" in message
         and "has no resource path" in message
     )
+
+
+def is_non_image_document_element_resource_error(error: BaseException) -> bool:
+    """Return whether a Resource API payload is a non-image fallback."""
+    return "Resource API returned non-image content type" in str(error)
 
 
 async def query_workspace_async(
@@ -1617,16 +1693,23 @@ def get_chat_model_config(
     model_name: str,
     max_tokens: int,
     config: RunnableConfig,
+    *,
+    api_key: str | None = None,
+    base_url: str | None = None,
 ) -> dict[str, Any]:
     """Build runtime configuration for a chat model."""
     model_config: dict[str, Any] = {
         "model": model_name,
         "max_tokens": max_tokens,
-        "api_key": get_api_key_for_model(model_name, config),
+        "api_key": api_key or get_api_key_for_model(model_name, config),
         "tags": ["langsmith:nostream"],
     }
     if model_name.lower().startswith("openai:"):
-        openai_base_url = Configuration.from_runnable_config(config).openai_base_url
+        # LangGraph Studio/API may run chat models through streaming. OpenAI-compatible
+        # providers only return token usage in streaming responses when this is enabled.
+        model_config["stream_usage"] = True
+        model_config["callbacks"] = [OPENAI_COMPATIBLE_USAGE_METADATA_CALLBACK]
+        openai_base_url = base_url or Configuration.from_runnable_config(config).openai_base_url
         if openai_base_url:
             model_config["base_url"] = openai_base_url.strip().rstrip("/")
     return model_config

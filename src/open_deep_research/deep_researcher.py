@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from typing import Literal
 
 from langchain.chat_models import init_chat_model
@@ -68,6 +69,7 @@ from open_deep_research.utils import (
     get_notes_from_tool_calls,
     get_today_str,
     is_missing_document_element_resource_error,
+    is_non_image_document_element_resource_error,
     is_token_limit_exceeded,
     openai_websearch_called,
     remove_up_to_last_ai_message,
@@ -76,7 +78,7 @@ from open_deep_research.utils import (
 
 # Initialize a configurable model that we will use throughout the agent
 configurable_model = init_chat_model(
-    configurable_fields=("model", "max_tokens", "api_key", "base_url"),
+    configurable_fields=("model", "max_tokens", "api_key", "base_url", "stream_usage"),
 )
 logger = logging.getLogger(__name__)
 
@@ -127,9 +129,12 @@ async def _build_compression_image_message(
     }]
     for result in fetch_results:
         if isinstance(result, Exception):
-            if is_missing_document_element_resource_error(result):
+            if (
+                is_missing_document_element_resource_error(result)
+                or is_non_image_document_element_resource_error(result)
+            ):
                 logger.info(
-                    "Skipping compression visual source without resource path: %s",
+                    "Skipping compression visual source without image payload: %s",
                     result,
                 )
             else:
@@ -175,6 +180,35 @@ def _get_user_title_hint(state: AgentState) -> str:
         if message_type in {"human", "user"} and isinstance(content, str) and content.strip():
             return content.strip()
     return state.get("research_brief", "") or "wiki"
+
+
+def _message_content_to_text(content) -> str:
+    """Convert a chat model content payload to plain text."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+            else:
+                parts.append(str(item))
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _parse_research_question_response(content) -> ResearchQuestion:
+    """Parse a plain JSON response into the research brief schema."""
+    text = _message_content_to_text(content).strip()
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    if fenced_match:
+        text = fenced_match.group(1).strip()
+    else:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            text = text[start:end + 1]
+    return ResearchQuestion.model_validate_json(text)
 
 
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
@@ -248,20 +282,22 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     Returns:
         Command to proceed to research supervisor with initialized context
     """
-    # Step 1: Set up the research model for structured output
+    # Step 1: Set up the research model for plain JSON text output
     configurable = Configuration.from_runnable_config(config)
-    research_model_config = get_chat_model_config(
-        configurable.research_model,
-        configurable.research_model_max_tokens,
+    brief_model_config = get_chat_model_config(
+        configurable.brief_model,
+        configurable.brief_model_max_tokens,
         config,
+        api_key=configurable.brief_api_key,
+        base_url=configurable.brief_base_url,
     )
     
-    # Configure model for structured research question generation
+    # Some compatible model endpoints do not support provider-level response_format.
+    # Ask for JSON in the prompt and validate it locally instead.
     research_model = (
         configurable_model
-        .with_structured_output(ResearchQuestion)
         .with_retry(stop_after_attempt=configurable.max_structured_output_retries)
-        .with_config(research_model_config)
+        .with_config(brief_model_config)
     )
     
     # Step 2: Generate structured research brief from user messages
@@ -270,6 +306,7 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
         date=get_today_str()
     )
     response = await research_model.ainvoke([HumanMessage(content=prompt_content)])
+    research_question = _parse_research_question_response(response.content)
     
     # Step 3: Initialize supervisor with research brief and instructions
     supervisor_system_prompt = lead_researcher_prompt.format(
@@ -281,12 +318,12 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     return Command(
         goto="research_supervisor",
         update={
-            "research_brief": response.research_brief,
+            "research_brief": research_question.research_brief,
             "supervisor_messages": {
                 "type": "override",
                 "value": [
                     SystemMessage(content=supervisor_system_prompt),
-                    HumanMessage(content=response.research_brief)
+                    HumanMessage(content=research_question.research_brief)
                 ]
             }
         }
@@ -646,11 +683,14 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
     """
     # Step 1: Configure the compression model
     configurable = Configuration.from_runnable_config(config)
-    synthesizer_model = configurable_model.with_config(get_chat_model_config(
+    synthesizer_model_config = get_chat_model_config(
         configurable.compression_model,
         configurable.compression_model_max_tokens,
         config,
-    ))
+    )
+    synthesizer_model = configurable_model.with_structured_output(
+        StructuredResearchDraft
+    ).with_config(synthesizer_model_config)
     
     # Step 2: Prepare messages for compression
     researcher_messages = state.get("researcher_messages", [])
@@ -683,9 +723,7 @@ async def compress_research(state: ResearcherState, config: RunnableConfig):
                 messages.append(image_message)
             
             # Execute compression with explicit finding-to-source relationships.
-            response = await synthesizer_model.with_structured_output(
-                StructuredResearchDraft
-            ).ainvoke(messages)
+            response = await synthesizer_model.ainvoke(messages)
             structured_research = coerce_structured_research_draft(
                 response,
             )
@@ -807,6 +845,8 @@ async def wiki_writer(state: AgentState, config: RunnableConfig):
         configurable.final_report_model,
         configurable.final_report_model_max_tokens,
         config,
+        api_key=configurable.final_report_api_key,
+        base_url=configurable.final_report_base_url,
     )
     
     # Step 3: Attempt report generation with token limit retry logic

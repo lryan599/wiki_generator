@@ -6,6 +6,7 @@ from pathlib import Path
 from langchain_core.messages import AIMessage, HumanMessage
 
 from open_deep_research.persistence import save_markdown_report, slugify_filename
+from open_deep_research.research import StructuredResearchDraft
 
 
 def load_cli_module():
@@ -269,9 +270,11 @@ def test_wiki_writer_saves_markdown_in_thread(monkeypatch, tmp_path):
     from open_deep_research import deep_researcher
 
     calls = []
+    model_configs = []
 
     class FakeModel:
         def with_config(self, config):
+            model_configs.append(config)
             return self
 
         async def ainvoke(self, messages):
@@ -296,6 +299,8 @@ def test_wiki_writer_saves_markdown_in_thread(monkeypatch, tmp_path):
                 "save_wiki_markdown": True,
                 "wiki_output_dir": str(tmp_path),
                 "final_report_model": "openai:test",
+                "final_report_api_key": "writer-key",
+                "final_report_base_url": "http://127.0.0.1:9100/v1",
             }
         },
     ))
@@ -305,7 +310,98 @@ def test_wiki_writer_saves_markdown_in_thread(monkeypatch, tmp_path):
     assert calls[0][1][3] == "H13钢"
     assert calls[0][2]["return_content"] is True
     assert calls[0][2]["metadata"]["confidence_score"] == 0.0
+    assert model_configs[0]["api_key"] == "writer-key"
+    assert model_configs[0]["base_url"] == "http://127.0.0.1:9100/v1"
     assert result["final_report"].startswith('---\nversion: "v1"\n')
     assert "confidence_level: \"very_low\"" in result["final_report"]
     assert "# Wiki" in result["final_report"]
     assert result["final_report_path"] == str(tmp_path / "H13钢.md")
+
+
+def test_write_research_brief_uses_dedicated_brief_model_config(monkeypatch):
+    from open_deep_research import deep_researcher
+
+    model_configs = []
+
+    class FakeModel:
+        def with_structured_output(self, schema):
+            raise AssertionError("write_research_brief should not use response_format")
+
+        def with_retry(self, **kwargs):
+            return self
+
+        def with_config(self, config):
+            model_configs.append(config)
+            return self
+
+        async def ainvoke(self, messages):
+            return AIMessage(content='```json\n{"research_brief":"brief"}\n```')
+
+    monkeypatch.setattr(deep_researcher, "configurable_model", FakeModel())
+
+    result = asyncio.run(deep_researcher.write_research_brief(
+        {"messages": [HumanMessage(content="H13钢")]},
+        {
+            "configurable": {
+                "brief_model": "openai:brief-model",
+                "brief_model_max_tokens": 1234,
+                "brief_api_key": "brief-key",
+                "brief_base_url": "http://127.0.0.1:9050/v1",
+                "research_model": "openai:research-model",
+                "research_model_max_tokens": 9999,
+            }
+        },
+    ))
+
+    assert model_configs[0]["model"] == "openai:brief-model"
+    assert model_configs[0]["max_tokens"] == 1234
+    assert model_configs[0]["api_key"] == "brief-key"
+    assert model_configs[0]["base_url"] == "http://127.0.0.1:9050/v1"
+    assert result.update["research_brief"] == "brief"
+
+
+def test_compress_research_applies_config_to_structured_runnable(monkeypatch):
+    from open_deep_research import deep_researcher
+
+    calls = []
+
+    class FakeStructuredModel:
+        def with_config(self, config):
+            calls.append(("structured_config", config))
+            return self
+
+        async def ainvoke(self, messages):
+            calls.append(("ainvoke", messages))
+            return StructuredResearchDraft(findings=[])
+
+    class FakeModel:
+        def with_config(self, config):
+            calls.append(("base_config", config))
+            return self
+
+        def with_structured_output(self, schema):
+            calls.append(("structured_output", schema))
+            return FakeStructuredModel()
+
+    monkeypatch.setattr(deep_researcher, "configurable_model", FakeModel())
+
+    result = asyncio.run(deep_researcher.compress_research(
+        {
+            "research_topic": "H13钢",
+            "researcher_messages": [AIMessage(content="notes")],
+        },
+        {
+            "configurable": {
+                "compression_model": "openai:compress-model",
+                "compression_model_max_tokens": 1234,
+            }
+        },
+    ))
+
+    assert calls[0] == ("structured_output", StructuredResearchDraft)
+    assert calls[1][0] == "structured_config"
+    assert calls[1][1]["model"] == "openai:compress-model"
+    assert calls[1][1]["max_tokens"] == 1234
+    assert calls[2][0] == "ainvoke"
+    assert all(call[0] != "base_config" for call in calls)
+    assert result["structured_research"].research_topic == "H13钢"

@@ -119,6 +119,24 @@ class Configuration(BaseModel):
             }
         }
     )
+    final_report_api_key: str | None = Field(
+        default=None,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "password",
+                "description": "Optional API key used only by the final wiki writer model. Can also be set with the FINAL_REPORT_API_KEY environment variable."
+            }
+        }
+    )
+    final_report_base_url: str | None = Field(
+        default=None,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "text",
+                "description": "Optional base URL used only by the final wiki writer model. For OpenAI-compatible writer models, can also be set with FINAL_REPORT_BASE_URL."
+            }
+        }
+    )
     knowledge_base_query_timeout_seconds: float = Field(
         default=600.0,
         gt=0,
@@ -271,6 +289,44 @@ class Configuration(BaseModel):
                 "min": 1000,
                 "max": 200000,
                 "description": "Maximum character length for webpage content before summarization"
+            }
+        }
+    )
+    brief_model: str = Field(
+        default="openai:gpt-4.1",
+        metadata={
+            "x_oap_ui_config": {
+                "type": "text",
+                "default": "openai:gpt-4.1",
+                "description": "Model for transforming the user request into the initial research brief"
+            }
+        }
+    )
+    brief_model_max_tokens: int = Field(
+        default=10000,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "number",
+                "default": 10000,
+                "description": "Maximum output tokens for the initial research brief model"
+            }
+        }
+    )
+    brief_api_key: str | None = Field(
+        default=None,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "password",
+                "description": "Optional API key used only by the initial research brief model. Can also be set with the BRIEF_API_KEY environment variable."
+            }
+        }
+    )
+    brief_base_url: str | None = Field(
+        default=None,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "text",
+                "description": "Optional base URL used only by the initial research brief model. For OpenAI-compatible brief models, can also be set with BRIEF_BASE_URL."
             }
         }
     )

@@ -70,6 +70,9 @@ Guidelines:
 
 Write the brief in Chinese unless the user's request clearly requires another language.
 The brief should be concrete enough for parallel research agents to work independently.
+
+Return only a valid JSON object, with no Markdown and no extra text:
+{{"research_brief":"..."}}
 """
 
 lead_researcher_prompt = """You are the lead research planner for a die-casting technical wiki generation system. Your job is to gather source-grounded evidence for a single wiki entry by calling the "ConductResearch" tool. For context, today's date is {date}.
@@ -268,7 +271,8 @@ The Findings source catalog contains citation_id values such as S1.
 - Cite supporting sources inline using exact tokens: [[S1]] for one source, or [[S1,S2]] for a jointly supported statement. Use comma-separated IDs with no spaces inside combined citation tokens.
 - Only use citation IDs present in the supplied sources.
 - Do not create normal Markdown links yourself and do not alter or invent URLs.
-- The only manual URL syntax you may write is Markdown image syntax `![alt text](image_url)` for an image/table/chart URL that appears in the supplied source catalog.
+- The only manual URL syntax you may write is Markdown image syntax `![alt text](image_url)` for a true visual image URL that appears in the supplied source catalog.
+- Some table resource URLs may return textual table or caption content rather than an image. Do not embed those URLs with Markdown image syntax; use the findings to write a normal Markdown table or cited sentence instead.
 - Do not write a Sources section. The application validates citation tokens, keeps them in the body, and appends the authoritative linked Sources section after generation.
 
 ## Writing Goal
@@ -316,8 +320,8 @@ Apply this rule in writing:
 8. Keep definitions, attributes, parameters, mechanisms, and relationships distinct when evidence supports that structure.
 9. If the evidence contains structured parameter data, ranges, classifications, comparison items, process settings, or control requirements, prefer markdown tables.
 10. Do not invent table rows, columns, values, ranges, or units that are not explicitly supported by the findings.
-11. Include an image only when the findings explicitly explain what the visual shows and how it supports the target entry. Do not infer visual meaning beyond the findings.
-12. For each included image, write a source-grounded explanatory sentence with citation token(s), then put exactly one Markdown image line using the exact URL from the corresponding source catalog entry, for example `![简洁图注](image_url)`.
+11. Include an image only when the findings explicitly explain that the source is visual evidence and how it supports the target entry. Do not infer visual meaning beyond the findings.
+12. For each included visual image, write a source-grounded explanatory sentence with citation token(s), then put exactly one Markdown image line using the exact URL from the corresponding source catalog entry, for example `![简洁图注](image_url)`.
 13. Do not put a normal Markdown link to the same image URL after the image. Avoid duplicate forms such as `![图注](url) [图注](url)`.
 14. Image alt text should be a concise academic-style figure caption that states what the image shows, not a decorative title.
 15. Include at most one or two images, choosing the strongest evidence. Do not include decorative, generic, weakly related, or unexplained images.

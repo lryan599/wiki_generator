@@ -323,11 +323,13 @@ def test_finalize_wiki_citations_renders_readable_text_and_table_sources():
         in finalized
     )
     assert (
-        "- S26: 表 5.5-8 H11、H13 钢的室温力学性能 "
-        "(`8e8ac345-cdd0-4267-ad18-a7691d2b2e3f`) - "
-        "| 钢号 | 抗拉强度 | 屈服强度 | | H13 | 1500 MPa | 1200 MPa |"
+        "- S26: [表 5.5-8 H11、H13 钢的室温力学性能]"
+        "(http://127.0.0.1:8000/api/v1/workspaces/wiki/"
+        "document-elements/8e8ac345-cdd0-4267-ad18-a7691d2b2e3f/resource) "
+        "(`8e8ac345-cdd0-4267-ad18-a7691d2b2e3f`)"
         in finalized
     )
+    assert "| 钢号 | 抗拉强度 | 屈服强度 |" not in finalized
 
 
 def test_calculate_wiki_confidence_uses_source_quality_freshness_and_coverage():
