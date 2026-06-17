@@ -220,12 +220,16 @@ Do not invent or modify source IDs.
 7. Do not turn weak hints or unsupported assumptions into findings.
 8. Do not invent source IDs, URLs, UUIDs, titles, captions, parameter values, ranges, or metadata.
 9. You may receive extra image_url blocks for image/table/chart evidence. Use the adjacent "Visual source metadata" text to identify the exact source_id for each image. Only cite a visual source when the visible content, caption, summary, or nearby text directly supports the finding.
+10. For visual evidence, do not merely state that an image exists. State what the image/table/chart shows, which technical claim or wiki section it can support, and a concise caption suggestion when the evidence supports one.
+11. Cite visual source_ids only for findings that actually use the visual content, caption, summary, or nearby text. If the visual relevance is weak or decorative, omit it.
+12. When a visual source should be used in the final wiki, make that explicit in the finding content so the writer knows why and where to use it.
 </Guidelines>
 
 <Structured Output Rules>
 Return only the requested findings draft object rather than Markdown.
 - findings: comprehensive factual findings.
 - Each finding must include source_ids copied exactly from tool results.
+- For visual findings, include the visual use: what the figure/table/chart shows, what wiki claim or section it supports, and any source-grounded caption wording.
 - Do not return research_topic, queries_and_tool_calls, or sources; the application derives those values directly from the tool messages.
 - Do not use local citation numbers such as [1] because multiple researchers will be merged later.
 </Structured Output Rules>
@@ -235,7 +239,7 @@ Critical Reminder: Keep only evidence-backed findings. A shorter set of precise,
 
 compress_research_simple_human_message = """All above messages are about research conducted by an AI Researcher. Please clean up these findings.
 
-Return only structured findings. Preserve exact source identifiers from the tool results. Do not return sources, research topic, or query history."""
+Return only structured findings. Preserve exact source identifiers from the tool results. For image/table/chart evidence, include only source-grounded findings that explain what the visual shows and how it should support the wiki. Do not return sources, research topic, or query history."""
 
 final_report_generation_prompt = """You are the Wiki Writer for a research-oriented die-casting technical markdown wiki system.
 
@@ -261,10 +265,11 @@ Here are the structured findings and source catalog from research:
 </Findings>
 
 The Findings source catalog contains citation_id values such as S1.
-- Cite supporting sources inline using the exact token [[S1]].
+- Cite supporting sources inline using exact tokens: [[S1]] for one source, or [[S1,S2]] for a jointly supported statement. Use comma-separated IDs with no spaces inside combined citation tokens.
 - Only use citation IDs present in the supplied sources.
-- Do not create Markdown links yourself and do not alter or invent URLs.
-- Do not write a Sources section. The application validates citation tokens, converts them to links, and appends the authoritative Sources section after generation.
+- Do not create normal Markdown links yourself and do not alter or invent URLs.
+- The only manual URL syntax you may write is Markdown image syntax `![alt text](image_url)` for an image/table/chart URL that appears in the supplied source catalog.
+- Do not write a Sources section. The application validates citation tokens, keeps them in the body, and appends the authoritative linked Sources section after generation.
 
 ## Writing Goal
 
@@ -311,10 +316,13 @@ Apply this rule in writing:
 8. Keep definitions, attributes, parameters, mechanisms, and relationships distinct when evidence supports that structure.
 9. If the evidence contains structured parameter data, ranges, classifications, comparison items, process settings, or control requirements, prefer markdown tables.
 10. Do not invent table rows, columns, values, ranges, or units that are not explicitly supported by the findings.
-11. If image evidence directly illustrates the entry, a structure, a defect morphology, a process stage, equipment, or a parameter comparison, include at most one or two Markdown images using the provided image URL after the citation token is later resolved by the application.
-12. Do not include decorative, generic, or weakly related images.
-13. Do not include a manually generated Sources or References section.
-14. Do not refer to yourself or describe your writing process.
+11. Include an image only when the findings explicitly explain what the visual shows and how it supports the target entry. Do not infer visual meaning beyond the findings.
+12. For each included image, write a source-grounded explanatory sentence with citation token(s), then put exactly one Markdown image line using the exact URL from the corresponding source catalog entry, for example `![简洁图注](image_url)`.
+13. Do not put a normal Markdown link to the same image URL after the image. Avoid duplicate forms such as `![图注](url) [图注](url)`.
+14. Image alt text should be a concise academic-style figure caption that states what the image shows, not a decorative title.
+15. Include at most one or two images, choosing the strongest evidence. Do not include decorative, generic, weakly related, or unexplained images.
+16. Do not include a manually generated Sources or References section.
+17. Do not refer to yourself or describe your writing process.
 
 ## Structure Guidance
 

@@ -13,6 +13,8 @@ def test_configuration_loads_separate_openai_and_knowledge_base_urls(monkeypatch
     monkeypatch.setenv("KNOWLEDGE_BASE_WINDOW_TIMEOUT_SECONDS", "30")
     monkeypatch.setenv("COMPRESSION_IMAGE_LIMIT", "6")
     monkeypatch.setenv("COMPRESSION_IMAGE_MAX_BYTES", "1234567")
+    monkeypatch.setenv("SAVE_WIKI_MARKDOWN", "false")
+    monkeypatch.setenv("WIKI_OUTPUT_DIR", "custom_outputs")
     monkeypatch.setenv("SUMMARIZATION_TIMEOUT_SECONDS", "15")
 
     configurable = Configuration.from_runnable_config({})
@@ -24,7 +26,34 @@ def test_configuration_loads_separate_openai_and_knowledge_base_urls(monkeypatch
     assert configurable.knowledge_base_window_timeout_seconds == 30
     assert configurable.compression_image_limit == 6
     assert configurable.compression_image_max_bytes == 1234567
+    assert configurable.save_wiki_markdown is False
+    assert configurable.wiki_output_dir == "custom_outputs"
     assert configurable.summarization_timeout_seconds == 15
+
+
+def test_configuration_parses_json_env_values_and_ignores_empty_strings(monkeypatch):
+    monkeypatch.setenv(
+        "MCP_CONFIG",
+        '{"url":"http://127.0.0.1:9001","tools":["lookup"],"auth_required":true}',
+    )
+    monkeypatch.setenv("MCP_PROMPT", "")
+
+    configurable = Configuration.from_runnable_config({})
+
+    assert configurable.mcp_config.url == "http://127.0.0.1:9001"
+    assert configurable.mcp_config.tools == ["lookup"]
+    assert configurable.mcp_config.auth_required is True
+    assert configurable.mcp_prompt is None
+
+
+def test_runnable_config_overrides_environment(monkeypatch):
+    monkeypatch.setenv("RESEARCH_MODEL", "openai:env-model")
+
+    configurable = Configuration.from_runnable_config({
+        "configurable": {"research_model": "openai:runtime-model"}
+    })
+
+    assert configurable.research_model == "openai:runtime-model"
 
 
 def test_openai_model_config_uses_compatible_base_url(monkeypatch):

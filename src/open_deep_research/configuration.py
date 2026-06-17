@@ -1,6 +1,7 @@
 """Configuration management for the Open Deep Research system."""
 
 import os
+import json
 from enum import Enum
 from typing import Any, List
 
@@ -172,6 +173,35 @@ class Configuration(BaseModel):
             }
         }
     )
+    save_wiki_markdown: bool = Field(
+        default=True,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "boolean",
+                "default": True,
+                "description": "Whether to save the final wiki markdown document to disk"
+            }
+        }
+    )
+    wiki_output_dir: str = Field(
+        default="wiki_outputs",
+        metadata={
+            "x_oap_ui_config": {
+                "type": "text",
+                "default": "wiki_outputs",
+                "description": "Directory where generated wiki markdown files are saved"
+            }
+        }
+    )
+    wiki_output_filename: str | None = Field(
+        default=None,
+        metadata={
+            "x_oap_ui_config": {
+                "type": "text",
+                "description": "Optional output markdown filename for a single pipeline run"
+            }
+        }
+    )
     max_researcher_iterations: int = Field(
         default=6,
         metadata={
@@ -335,7 +365,7 @@ class Configuration(BaseModel):
         configurable = config.get("configurable", {}) if config else {}
         field_names = list(cls.model_fields.keys())
         values: dict[str, Any] = {
-            field_name: os.environ.get(field_name.upper(), configurable.get(field_name))
+            field_name: _get_config_value(field_name, configurable)
             for field_name in field_names
         }
         return cls(**{k: v for k, v in values.items() if v is not None})
@@ -344,3 +374,26 @@ class Configuration(BaseModel):
         """Pydantic configuration."""
         
         arbitrary_types_allowed = True
+
+
+def _get_config_value(field_name: str, configurable: dict[str, Any]) -> Any:
+    """Read a config field from RunnableConfig first, then environment."""
+    if field_name in configurable and configurable[field_name] is not None:
+        return configurable[field_name]
+    env_value = os.environ.get(field_name.upper())
+    if env_value is not None:
+        return _parse_env_value(env_value)
+    return None
+
+
+def _parse_env_value(value: str) -> Any:
+    """Parse JSON-like environment values while leaving simple strings intact."""
+    stripped = value.strip()
+    if stripped == "":
+        return None
+    if stripped[0:1] in {"{", "["}:
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            return value
+    return value

@@ -134,6 +134,10 @@ def test_query_workspace_async_requests_and_normalizes_multimodal_data(monkeypat
         "attributes": {"catalog_path": "Chapter 1"},
         "content": "text evidence",
         "enhanced_str": "enhanced evidence",
+        "url": (
+            "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
+            "document-elements/text-1/resource"
+        ),
         "score": 0.9,
     }]
     assert result["image_results"][0] == {
@@ -150,10 +154,12 @@ def test_query_workspace_async_requests_and_normalizes_multimodal_data(monkeypat
         "summary": "diagram",
         "score": 0.8,
     }
-    assert result["table_results"][0]["url"] == (
-        "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
-        "document-elements/table-1/resource"
-    )
+    assert result["table_results"][0] == {
+        "uuid": "table-1",
+        "body": "| a | b |",
+        "summary": "table summary",
+        "score": 0.7,
+    }
     assert result["chart_results"][0]["url"] == (
         "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
         "document-elements/chart-1/resource"
@@ -370,7 +376,8 @@ def test_document_element_window_requests_context_and_resolves_urls(monkeypatch)
           },
           "items": [
             {"uuid": "text-1", "modal_type": "TEXT", "url": null},
-            {"uuid": "image/node 1", "modal_type": "IMAGE", "url": "/images/center.jpg"}
+            {"uuid": "image/node 1", "modal_type": "IMAGE", "url": "/images/center.jpg"},
+            {"uuid": "table-1", "modal_type": "TABLE", "url": null, "body": "| a | b |"}
           ],
           "k": 4,
           "total": 10,
@@ -402,6 +409,8 @@ def test_document_element_window_requests_context_and_resolves_urls(monkeypatch)
         "http://127.0.0.1:8000/api/v1/workspaces/manual%20workspace/"
         "document-elements/image%2Fnode%201/resource"
     )
+    assert result["items"][2]["url"] is None
+    assert result["items"][2]["body"] == "| a | b |"
     assert FakeSession.timeouts == [35]
 
 
@@ -481,6 +490,18 @@ def test_document_element_resource_rejects_non_image_content(monkeypatch):
                 base_url="http://127.0.0.1:8000",
             )
         )
+
+
+def test_missing_document_element_resource_error_is_skippable():
+    error = ToolException(
+        'Resource API request failed with HTTP 404: '
+        '{"detail":"TableNode 5680a7c1-2817-463c-a209-15f9c3c4895a has no resource path"}'
+    )
+
+    assert utils.is_missing_document_element_resource_error(error)
+    assert not utils.is_missing_document_element_resource_error(
+        ToolException('Resource API request failed with HTTP 404: {"detail":"not found"}')
+    )
 
 
 def test_window_tools_preserve_results_as_artifacts(monkeypatch):

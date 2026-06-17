@@ -232,6 +232,11 @@ def _is_multimodal_element(element: dict[str, Any]) -> bool:
     return bool(labels & {"ImageNode", "TableNode", "ChartNode"})
 
 
+def _has_document_element_resource(element: dict[str, Any]) -> bool:
+    """Return whether a document element advertises a downloadable resource."""
+    return bool(element.get("url"))
+
+
 def _select_fields(result: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
     """Select meaningful fields from a retrieval result."""
     return {
@@ -264,10 +269,18 @@ def _normalize_query_result(
 
     for result in metadata.get("text_results") or []:
         if isinstance(result, dict):
-            normalized["text_results"].append(_select_fields(
+            selected = _select_fields(
                 result,
                 common_fields + ("content", "enhanced_str", "score"),
-            ))
+            )
+            element_id = selected.get("uuid")
+            if isinstance(element_id, str) and element_id:
+                selected["url"] = _document_element_resource_url(
+                    element_id,
+                    workspace_id,
+                    base_url,
+                )
+            normalized["text_results"].append(selected)
 
     multimodal_fields = common_fields + (
         "url",
@@ -283,7 +296,11 @@ def _normalize_query_result(
                 continue
             selected = _select_fields(result, multimodal_fields)
             element_id = selected.get("uuid")
-            if isinstance(element_id, str) and element_id:
+            if (
+                isinstance(element_id, str)
+                and element_id
+                and _has_document_element_resource(selected)
+            ):
                 selected["url"] = _document_element_resource_url(
                     element_id,
                     workspace_id,
@@ -366,7 +383,21 @@ def _resolve_document_element_urls(
 
     for element in elements:
         element_id = element.get("uuid")
-        if isinstance(element_id, str) and element_id and _is_multimodal_element(element):
+        labels = {
+            str(label)
+            for label in element.get("labels", [])
+            if isinstance(label, str)
+        }
+        modal_type = str(element.get("modal_type") or "").upper()
+        is_text_element = modal_type == "TEXT" or "TextNode" in labels
+        if (
+            isinstance(element_id, str)
+            and element_id
+            and (
+                is_text_element
+                or (_is_multimodal_element(element) and _has_document_element_resource(element))
+            )
+        ):
             element["url"] = _document_element_resource_url(
                 element_id,
                 workspace_id,
@@ -533,6 +564,15 @@ async def get_document_element_resource_data_url_async(
         "mime_type": content_type,
         "data_url": f"data:{content_type};base64,{encoded}",
     }
+
+
+def is_missing_document_element_resource_error(error: BaseException) -> bool:
+    """Return whether a Resource API error means the node has no downloadable file."""
+    message = str(error)
+    return (
+        "Resource API request failed with HTTP 404" in message
+        and "has no resource path" in message
+    )
 
 
 async def query_workspace_async(

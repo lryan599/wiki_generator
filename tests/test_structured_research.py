@@ -220,11 +220,112 @@ def test_writer_context_and_final_citations_use_only_known_sources():
 
     assert '"citation_ids": [' in context
     assert '"S2"' in context
+    assert "documented [[S1]] and illustrated [[S2]]" in finalized
     assert "[Web Guide](https://example.com/a)" in finalized
     assert "[Inspection diagram](http://127.0.0.1:8000/images/diagram.png)" in finalized
     assert "https://invented.example" not in finalized
     assert finalized.count("## Sources") == 1
     assert "`node-b`" in finalized
+
+
+def test_finalize_wiki_citations_expands_combined_citation_groups():
+    citation_sources = {
+        "S18": ResearchSource(
+            source_id="text-18",
+            source_type="text",
+            title="Text Source",
+        ),
+        "S50": ResearchSource(
+            source_id="image-50",
+            source_type="image",
+            caption="Image Source",
+            url="http://127.0.0.1:8000/resource/image-50",
+        ),
+    }
+
+    finalized = finalize_wiki_citations(
+        "Combined evidence [[S18,S50]].",
+        citation_sources,
+    )
+
+    assert "Combined evidence [[S18,S50]]." in finalized
+    assert "- S18: Text Source (`text-18`)" in finalized
+    assert (
+        "- S50: [Image Source](http://127.0.0.1:8000/resource/image-50) (`image-50`)"
+        in finalized
+    )
+
+
+def test_finalize_wiki_citations_removes_duplicate_image_link():
+    citation_sources = {
+        "S1": ResearchSource(
+            source_id="image-1",
+            source_type="image",
+            caption="H13钢退火态光学显微镜组织",
+            url=(
+                "http://192.168.150.150:8000/api/v1/workspaces/"
+                "die_casting_wiki_v2/document-elements/image-1/resource"
+            ),
+        ),
+    }
+    image_url = citation_sources["S1"].url
+
+    finalized = finalize_wiki_citations(
+        (
+            f"该图像可用于说明退火态组织特征 [[S1]]。\n\n"
+            f"![H13钢退火态粒状珠光体金相组织]({image_url}) "
+            f"[H13钢退火态光学显微镜组织]({image_url})"
+        ),
+        citation_sources,
+    )
+
+    assert f"![H13钢退火态粒状珠光体金相组织]({image_url})" in finalized
+    assert (
+        f"![H13钢退火态粒状珠光体金相组织]({image_url}) "
+        f"[H13钢退火态光学显微镜组织]({image_url})"
+        not in finalized
+    )
+    assert "- S1:" in finalized
+
+
+def test_finalize_wiki_citations_renders_readable_text_and_table_sources():
+    citation_sources = {
+        "S25": ResearchSource(
+            source_id="8c9f1f9d-a30c-4425-9952-f02ebfc45d13",
+            source_type="text",
+            uuid="8c9f1f9d-a30c-4425-9952-f02ebfc45d13",
+            content="H13钢属于热作模具钢，常用于压铸模具成型零件。",
+            url=(
+                "http://127.0.0.1:8000/api/v1/workspaces/wiki/"
+                "document-elements/8c9f1f9d-a30c-4425-9952-f02ebfc45d13/resource"
+            ),
+        ),
+        "S26": ResearchSource(
+            source_id="8e8ac345-cdd0-4267-ad18-a7691d2b2e3f",
+            source_type="table",
+            uuid="8e8ac345-cdd0-4267-ad18-a7691d2b2e3f",
+            caption="表 5.5-8 H11、H13 钢的室温力学性能",
+            body="| 钢号 | 抗拉强度 | 屈服强度 |\n| H13 | 1500 MPa | 1200 MPa |",
+        ),
+    }
+
+    finalized = finalize_wiki_citations(
+        "H13钢可用于压铸模具 [[S25]]，性能数据见表 [[S26]]。",
+        citation_sources,
+    )
+
+    assert (
+        "- S25: [H13钢属于热作模具钢，常用于压铸模具成型零件。]"
+        "(http://127.0.0.1:8000/api/v1/workspaces/wiki/"
+        "document-elements/8c9f1f9d-a30c-4425-9952-f02ebfc45d13/resource)"
+        in finalized
+    )
+    assert (
+        "- S26: 表 5.5-8 H11、H13 钢的室温力学性能 "
+        "(`8e8ac345-cdd0-4267-ad18-a7691d2b2e3f`) - "
+        "| 钢号 | 抗拉强度 | 屈服强度 | | H13 | 1500 MPa | 1200 MPa |"
+        in finalized
+    )
 
 
 @pytest.mark.parametrize(

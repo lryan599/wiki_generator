@@ -30,6 +30,7 @@ from open_deep_research.prompts import (
     research_system_prompt,
     transform_messages_into_research_topic_prompt,
 )
+from open_deep_research.persistence import save_markdown_report
 from open_deep_research.research import (
     CitationValidationError,
     ResearchSource,
@@ -65,6 +66,7 @@ from open_deep_research.utils import (
     get_model_token_limit,
     get_notes_from_tool_calls,
     get_today_str,
+    is_missing_document_element_resource_error,
     is_token_limit_exceeded,
     openai_websearch_called,
     remove_up_to_last_ai_message,
@@ -93,7 +95,7 @@ async def _build_compression_image_message(
     image_sources = [
         source
         for source in sources
-        if source.source_type in {"image", "table", "chart"}
+        if source.source_type in {"image", "table", "chart"} and source.url
     ][:configurable.compression_image_limit]
     if not image_sources:
         return None
@@ -124,7 +126,16 @@ async def _build_compression_image_message(
     }]
     for result in fetch_results:
         if isinstance(result, Exception):
-            logger.warning("Failed to fetch compression image resource", exc_info=result)
+            if is_missing_document_element_resource_error(result):
+                logger.info(
+                    "Skipping compression visual source without resource path: %s",
+                    result,
+                )
+            else:
+                logger.warning(
+                    "Failed to fetch compression image resource",
+                    exc_info=result,
+                )
             continue
         source, resource = result
         source_note = {
@@ -150,6 +161,19 @@ async def _build_compression_image_message(
     if len(content_blocks) == 1:
         return None
     return HumanMessage(content=content_blocks)
+
+
+def _get_user_title_hint(state: AgentState) -> str:
+    """Use the original user text as the generated markdown filename hint."""
+    for message in state.get("messages", []):
+        content = getattr(message, "content", None)
+        message_type = getattr(message, "type", None)
+        if isinstance(message, dict):
+            content = message.get("content")
+            message_type = message.get("role") or message.get("type")
+        if message_type in {"human", "user"} and isinstance(content, str) and content.strip():
+            return content.strip()
+    return state.get("research_brief", "") or "wiki"
 
 
 async def clarify_with_user(state: AgentState, config: RunnableConfig) -> Command[Literal["write_research_brief", "__end__"]]:
@@ -816,9 +840,20 @@ async def wiki_writer(state: AgentState, config: RunnableConfig):
                     update={"content": final_report_content}
                 )
 
+            final_report_path = None
+            if configurable.save_wiki_markdown:
+                final_report_path = str(await asyncio.to_thread(
+                    save_markdown_report,
+                    final_report_content,
+                    configurable.wiki_output_dir,
+                    configurable.wiki_output_filename,
+                    _get_user_title_hint(state),
+                ))
+
             # Return successful report generation
             return {
                 "final_report": final_report_content,
+                "final_report_path": final_report_path,
                 "messages": [final_report],
                 **cleared_state
             }

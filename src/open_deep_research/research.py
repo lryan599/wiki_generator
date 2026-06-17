@@ -407,13 +407,94 @@ def build_writer_research_context(
     return json.dumps(payload, ensure_ascii=False, indent=2), citation_sources
 
 
+def _compact_source_text(value: Any, max_length: int = 120) -> str:
+    """Normalize source text for labels and source-list evidence snippets."""
+    if value in (None, ""):
+        return ""
+    text = re.sub(r"\s+", " ", str(value)).strip()
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 3].rstrip() + "..."
+
+
+def _source_kind_label(source: ResearchSource) -> str:
+    labels = {
+        "web": "Web",
+        "text": "TextNode",
+        "image": "ImageNode",
+        "table": "TableNode",
+        "chart": "ChartNode",
+        "other": "Source",
+    }
+    return labels.get(source.source_type, "Source")
+
+
+def _source_label(source: ResearchSource) -> str:
+    """Choose a readable label instead of falling back directly to UUIDs."""
+    direct_label = (
+        source.title
+        or source.caption
+        or source.name
+        or source.attributes.get("catalog_path")
+    )
+    label = _compact_source_text(direct_label)
+    if label:
+        return label
+
+    evidence_label = _compact_source_text(
+        source.summary
+        or source.description
+        or source.content
+        or source.body
+        or source.enhanced_str,
+        max_length=80,
+    )
+    if evidence_label:
+        return evidence_label
+
+    return f"{_source_kind_label(source)} {source.uuid or source.source_id}"
+
+
+def _source_evidence_excerpt(source: ResearchSource) -> str:
+    """Return a short source evidence excerpt for non-clickable sources."""
+    return _compact_source_text(
+        source.content
+        or source.body
+        or source.summary
+        or source.description
+        or source.enhanced_str,
+        max_length=180,
+    )
+
+
 def finalize_wiki_citations(
     wiki_content: str,
     citation_sources: dict[str, ResearchSource],
 ) -> str:
-    """Replace valid citation aliases and append a program-generated source list."""
+    """Validate inline citation aliases and append a program-generated source list."""
     referenced_aliases: list[str] = []
-    citation_aliases = re.findall(r"\[\[(S\d+)\]\]", wiki_content)
+
+    def parse_citation_aliases(raw_aliases: str) -> list[str]:
+        aliases = [
+            alias
+            for alias in re.split(r"[,，、;\s]+", raw_aliases.strip())
+            if alias
+        ]
+        invalid_aliases = [
+            alias for alias in aliases if not re.fullmatch(r"S\d+", alias)
+        ]
+        if invalid_aliases:
+            raise CitationValidationError(
+                f"Invalid citation IDs: {', '.join(invalid_aliases)}"
+            )
+        return aliases
+
+    citation_groups = list(re.finditer(r"\[\[([^\]]+)\]\]", wiki_content))
+    citation_aliases = [
+        alias
+        for group in citation_groups
+        for alias in parse_citation_aliases(group.group(1))
+    ]
     unknown_aliases = sorted({
         alias for alias in citation_aliases if alias not in citation_sources
     })
@@ -424,19 +505,18 @@ def finalize_wiki_citations(
     if not citation_aliases:
         raise CitationValidationError("The wiki draft contains no citation IDs.")
 
-    def replace_citation(match: re.Match[str]) -> str:
-        alias = match.group(1)
-        source = citation_sources.get(alias)
+    for alias in citation_aliases:
         if alias not in referenced_aliases:
             referenced_aliases.append(alias)
 
-        label = source.title or source.caption or source.name or source.source_id
-        label = label.replace("[", "\\[").replace("]", "\\]")
-        if source.url:
-            return f"[{label}]({source.url})"
-        return f"[{label}; source_id={source.source_id}]"
+    finalized = wiki_content
 
-    finalized = re.sub(r"\[\[(S\d+)\]\]", replace_citation, wiki_content)
+    finalized = re.sub(
+        r"(?P<image>!\[[^\]]*\]\((?P<url>[^)\s]+)\))\s+\[[^\]]+\]\((?P=url)\)",
+        lambda match: match.group("image"),
+        finalized,
+    )
+
     allowed_urls = {
         source.url for source in citation_sources.values() if source.url
     }
@@ -454,13 +534,17 @@ def finalize_wiki_citations(
     source_lines = []
     for alias in referenced_aliases:
         source = citation_sources[alias]
-        label = source.title or source.caption or source.name or source.source_id
+        label = _source_label(source)
         source_identity = source.uuid or source.source_id
         if source.url:
             source_lines.append(
                 f"- {alias}: [{label}]({source.url}) (`{source_identity}`)"
             )
         else:
-            source_lines.append(f"- {alias}: {label} (`{source_identity}`)")
+            evidence_excerpt = _source_evidence_excerpt(source)
+            detail = f" - {evidence_excerpt}" if evidence_excerpt else ""
+            source_lines.append(
+                f"- {alias}: {label} (`{source_identity}`){detail}"
+            )
 
     return finalized + "\n\n## Sources\n" + "\n".join(source_lines)
