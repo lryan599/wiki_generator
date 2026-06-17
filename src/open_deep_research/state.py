@@ -62,11 +62,16 @@ def override_reducer(current_value, new_value):
         return operator.add(current_value, new_value)
     
 class AgentInputState(MessagesState):
-    """InputState is only 'messages'."""
+    """Input state for a wiki generation request."""
+
+    wiki_entry_name: str | None
+    wiki_entry_description: str | None
 
 class AgentState(MessagesState):
     """Main agent state containing messages and research data."""
     
+    wiki_entry_name: str | None
+    wiki_entry_description: str | None
     supervisor_messages: Annotated[list[MessageLikeRepresentation], override_reducer]
     research_brief: str | None
     raw_notes: Annotated[list[str], override_reducer] = []

@@ -1,6 +1,7 @@
 import asyncio
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -95,6 +96,41 @@ def test_record_from_topic_builds_single_record():
     }
 
 
+def test_read_wiki_entries_parses_pipe_delimited_file(tmp_path):
+    cli = load_cli_module()
+    input_path = tmp_path / "wiki_entries.txt"
+    input_path.write_text(
+        "# comment\n"
+        "H13钢|热作模具钢，描述可能不完整\n"
+        "压铸速度|\n"
+        "浇口速度\n",
+        encoding="utf-8",
+    )
+
+    assert cli._read_wiki_entries(input_path) == [
+        {
+            "id": "H13钢",
+            "name": "H13钢",
+            "topic": "H13钢",
+            "wiki_entry_name": "H13钢",
+            "description": "热作模具钢，描述可能不完整",
+            "wiki_entry_description": "热作模具钢，描述可能不完整",
+        },
+        {
+            "id": "压铸速度",
+            "name": "压铸速度",
+            "topic": "压铸速度",
+            "wiki_entry_name": "压铸速度",
+        },
+        {
+            "id": "浇口速度",
+            "name": "浇口速度",
+            "topic": "浇口速度",
+            "wiki_entry_name": "浇口速度",
+        },
+    ]
+
+
 def test_read_json_object_rejects_non_object_config(tmp_path):
     cli = load_cli_module()
     config_path = tmp_path / "config.json"
@@ -143,9 +179,13 @@ def test_run_batch_writes_result_index_without_real_graph(monkeypatch, tmp_path)
         "api_url": None,
         "assistant_id": "Deep Researcher",
         "api_key": None,
+        "thread_id": calls[0]["thread_id"],
+        "wiki_entry_name": None,
+        "wiki_entry_description": None,
     }]
     assert results == [{
         "id": "entry-1",
+        "name": None,
         "ok": True,
         "thread_id": None,
         "final_report_path": str(output_dir / "entry-1.md"),
@@ -182,8 +222,104 @@ def test_run_batch_records_supports_direct_topic_without_input_file(monkeypatch,
     assert calls[0]["user_content"] == "压铸速度"
     assert calls[0]["output_filename"] == "speed.md"
     assert calls[0]["api_url"] is None
+    assert calls[0]["thread_id"]
+    assert calls[0]["wiki_entry_name"] is None
     assert results[0]["ok"] is True
     assert results_path.exists()
+
+
+def test_run_batch_supports_wiki_entries_txt(monkeypatch, tmp_path):
+    cli = load_cli_module()
+    input_path = tmp_path / "wiki_entries.txt"
+    input_path.write_text("H13钢|热作模具钢\n", encoding="utf-8")
+    calls = []
+
+    async def fake_run_wiki_pipeline(user_content, **kwargs):
+        calls.append({"user_content": user_content, **kwargs})
+        return {"final_report": "markdown"}
+
+    monkeypatch.setattr(cli, "run_wiki_pipeline", fake_run_wiki_pipeline)
+
+    results = asyncio.run(cli.run_batch(
+        input_path,
+        output_dir=tmp_path / "out",
+        results_path=tmp_path / "results.jsonl",
+        input_format="auto",
+        api_url="http://127.0.0.1:2024",
+    ))
+
+    assert calls[0]["user_content"].startswith("目标词条：H13钢")
+    assert "描述提示：热作模具钢" in calls[0]["user_content"]
+    assert calls[0]["output_filename"] == "H13钢.md"
+    assert calls[0]["thread_id"]
+    assert calls[0]["wiki_entry_name"] == "H13钢"
+    assert calls[0]["wiki_entry_description"] == "热作模具钢"
+    assert results[0]["id"] == "H13钢"
+    assert results[0]["name"] == "H13钢"
+    assert results[0]["ok"] is True
+
+
+def test_run_batch_limit_only_processes_first_k_records(monkeypatch, tmp_path):
+    cli = load_cli_module()
+    input_path = tmp_path / "wiki_entries.txt"
+    input_path.write_text(
+        "H13钢|热作模具钢\n"
+        "压铸速度|工艺参数\n"
+        "浇口速度|入口速度\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    async def fake_run_wiki_pipeline(user_content, **kwargs):
+        calls.append({"user_content": user_content, **kwargs})
+        return {"final_report": "markdown"}
+
+    monkeypatch.setattr(cli, "run_wiki_pipeline", fake_run_wiki_pipeline)
+
+    results = asyncio.run(cli.run_batch(
+        input_path,
+        output_dir=tmp_path / "out",
+        results_path=tmp_path / "results.jsonl",
+        input_format="wiki-entries",
+        limit=2,
+        max_concurrency=3,
+    ))
+
+    assert [result["id"] for result in results] == ["H13钢", "压铸速度"]
+    assert [call["wiki_entry_name"] for call in calls] == ["H13钢", "压铸速度"]
+    assert len({call["thread_id"] for call in calls}) == 2
+
+
+def test_main_passes_limit_and_concurrency_to_batch(monkeypatch, tmp_path):
+    cli = load_cli_module()
+    input_path = tmp_path / "wiki_entries.txt"
+    input_path.write_text("H13钢|热作模具钢\n", encoding="utf-8")
+    calls = []
+
+    async def fake_run_batch(input_path_arg, **kwargs):
+        calls.append({"input_path": input_path_arg, **kwargs})
+        return [{"id": "H13钢", "ok": True}]
+
+    monkeypatch.setattr(cli, "run_batch", fake_run_batch)
+    monkeypatch.setattr(sys, "argv", [
+        "cli.py",
+        str(input_path),
+        "--env-file",
+        str(tmp_path / "missing.env"),
+        "--limit",
+        "5",
+        "--concurrency",
+        "4",
+        "--input-format",
+        "wiki-entries",
+    ])
+
+    cli.main()
+
+    assert calls[0]["input_path"] == input_path
+    assert calls[0]["limit"] == 5
+    assert calls[0]["max_concurrency"] == 4
+    assert calls[0]["input_format"] == "wiki-entries"
 
 
 def test_run_batch_records_passes_langgraph_api_options(monkeypatch, tmp_path):
@@ -212,6 +348,8 @@ def test_run_batch_records_passes_langgraph_api_options(monkeypatch, tmp_path):
     assert calls[0]["api_url"] == "http://127.0.0.1:2024"
     assert calls[0]["assistant_id"] == "Deep Researcher"
     assert calls[0]["api_key"] == "test-key"
+    assert calls[0]["thread_id"]
+    assert calls[0]["wiki_entry_name"] is None
     assert results[0]["thread_id"] == "thread-1"
     assert results[0]["client_final_report_path"] == "local.md"
 
@@ -264,6 +402,22 @@ def test_run_wiki_pipeline_api_waits_for_langgraph_run_and_saves_client_copy(mon
     assert final_state["thread_id"] == "thread-1"
     assert final_state["client_final_report_path"] == str(tmp_path / "speed.md")
     assert (tmp_path / "speed.md").read_text(encoding="utf-8") == "# Wiki"
+
+
+def test_brief_input_includes_structured_wiki_entry_metadata():
+    from open_deep_research import deep_researcher
+
+    formatted = deep_researcher._format_brief_input({
+        "messages": [HumanMessage(content="批量生成")],
+        "wiki_entry_name": "H13钢",
+        "wiki_entry_description": "热作模具钢，描述可能不准确",
+    })
+
+    assert "<WikiEntryInput>" in formatted
+    assert "wiki_entry_name: H13钢" in formatted
+    assert "wiki_entry_description: 热作模具钢，描述可能不准确" in formatted
+    assert "weak hint only" in formatted
+    assert "<ConversationMessages>" in formatted
 
 
 def test_wiki_writer_saves_markdown_in_thread(monkeypatch, tmp_path):

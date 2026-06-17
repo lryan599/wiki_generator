@@ -171,6 +171,9 @@ async def _build_compression_image_message(
 
 def _get_user_title_hint(state: AgentState) -> str:
     """Use the original user text as the generated markdown filename hint."""
+    wiki_entry_name = state.get("wiki_entry_name")
+    if isinstance(wiki_entry_name, str) and wiki_entry_name.strip():
+        return wiki_entry_name.strip()
     for message in state.get("messages", []):
         content = getattr(message, "content", None)
         message_type = getattr(message, "type", None)
@@ -180,6 +183,35 @@ def _get_user_title_hint(state: AgentState) -> str:
         if message_type in {"human", "user"} and isinstance(content, str) and content.strip():
             return content.strip()
     return state.get("research_brief", "") or "wiki"
+
+
+def _format_brief_input(state: AgentState) -> str:
+    """Format graph input for the research brief builder."""
+    messages_text = get_buffer_string(state.get("messages", []))
+    wiki_entry_name = state.get("wiki_entry_name")
+    wiki_entry_description = state.get("wiki_entry_description")
+    if not (
+        isinstance(wiki_entry_name, str)
+        and wiki_entry_name.strip()
+    ) and not (
+        isinstance(wiki_entry_description, str)
+        and wiki_entry_description.strip()
+    ):
+        return messages_text
+
+    lines = ["<WikiEntryInput>"]
+    if isinstance(wiki_entry_name, str) and wiki_entry_name.strip():
+        lines.append(f"wiki_entry_name: {wiki_entry_name.strip()}")
+    if isinstance(wiki_entry_description, str) and wiki_entry_description.strip():
+        lines.append(f"wiki_entry_description: {wiki_entry_description.strip()}")
+    lines.append(
+        "description_policy: The description is a weak hint only. "
+        "Do not treat it as source evidence or ground truth."
+    )
+    lines.append("</WikiEntryInput>")
+    if messages_text.strip():
+        lines.extend(["", "<ConversationMessages>", messages_text, "</ConversationMessages>"])
+    return "\n".join(lines)
 
 
 def _message_content_to_text(content) -> str:
@@ -302,7 +334,7 @@ async def write_research_brief(state: AgentState, config: RunnableConfig) -> Com
     
     # Step 2: Generate structured research brief from user messages
     prompt_content = transform_messages_into_research_topic_prompt.format(
-        messages=get_buffer_string(state.get("messages", [])),
+        messages=_format_brief_input(state),
         date=get_today_str()
     )
     response = await research_model.ainvoke([HumanMessage(content=prompt_content)])
