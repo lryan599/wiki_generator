@@ -1,0 +1,153 @@
+:root {
+  --wiki-accent: #0f766e;
+  --wiki-border: #d8dee4;
+  --wiki-surface: #f6f8fa;
+}
+
+body {
+  color: #24292f;
+  font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC",
+    "Noto Sans CJK SC", sans-serif;
+}
+
+button,
+input,
+select,
+textarea,
+.navbar,
+.bs-sidebar,
+.col-md-9,
+.col-md-9 table {
+  font-family: inherit;
+}
+
+.navbar-default {
+  background-color: #263238;
+  border-color: #263238;
+}
+
+.navbar-default .navbar-brand,
+.navbar-default .navbar-nav > li > a {
+  color: #ffffff;
+}
+
+.navbar-default .navbar-brand:hover,
+.navbar-default .navbar-nav > li > a:hover {
+  color: #b2dfdb;
+}
+
+.bs-sidebar .nav > .active > a,
+.bs-sidebar .nav > .active:hover > a,
+.bs-sidebar .nav > .active:focus > a {
+  color: var(--wiki-accent);
+  border-right-color: var(--wiki-accent);
+}
+
+.col-md-9 h1,
+.col-md-9 h2,
+.col-md-9 h3,
+.col-md-9 h4,
+.col-md-9 h5,
+.col-md-9 h6 {
+  color: #1f2933;
+  font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC",
+    "Noto Sans CJK SC", sans-serif;
+  letter-spacing: 0;
+}
+
+.col-md-9 h1 {
+  margin: 0 0 1.25rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--wiki-border);
+  font-size: 32px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.col-md-9 h2 {
+  margin: 2.25rem 0 0.8rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid #e7ebee;
+  font-size: 25px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.col-md-9 h3 {
+  margin: 1.65rem 0 0.65rem;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.col-md-9 h4 {
+  margin: 1.35rem 0 0.55rem;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.col-md-9 > h1:first-child,
+.col-md-9 > h2:first-child,
+.col-md-9 > h3:first-child {
+  margin-top: 0;
+}
+
+.col-md-9 .headerlink {
+  margin-left: 0.35rem;
+  color: var(--wiki-accent);
+  font-size: 0.7em;
+  font-weight: 400;
+  opacity: 0;
+}
+
+.col-md-9 h1:hover .headerlink,
+.col-md-9 h2:hover .headerlink,
+.col-md-9 h3:hover .headerlink,
+.col-md-9 h4:hover .headerlink {
+  opacity: 0.65;
+}
+
+.col-md-9 table {
+  display: block;
+  width: max-content;
+  min-width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  table-layout: auto;
+}
+
+.col-md-9 table th {
+  white-space: nowrap;
+}
+
+.col-md-9 table td {
+  min-width: 4.5rem;
+  max-width: 28rem;
+  vertical-align: top;
+  word-break: normal;
+  overflow-wrap: break-word;
+}
+
+.col-md-9 blockquote {
+  background: var(--wiki-surface);
+  border-left-color: var(--wiki-accent);
+}
+
+.col-md-9 img {
+  display: block;
+  clear: both;
+  max-width: 100%;
+  height: auto;
+  margin: 1.25rem auto;
+  object-fit: contain;
+}
+
+.col-md-9 p:has(> img) {
+  margin: 1.25rem 0;
+  text-align: center;
+}
+
+.col-md-9 li > img {
+  margin-left: 0;
+}

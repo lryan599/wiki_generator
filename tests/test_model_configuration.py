@@ -11,6 +11,14 @@ from open_deep_research.utils import (
 )
 
 
+def test_configuration_defaults_wiki_output_to_mkdocs_docs(monkeypatch):
+    monkeypatch.delenv("WIKI_OUTPUT_DIR", raising=False)
+
+    configurable = Configuration.from_runnable_config({})
+
+    assert configurable.wiki_output_dir == "wiki_site/docs/entries"
+
+
 def test_configuration_loads_separate_openai_and_knowledge_base_urls(monkeypatch):
     monkeypatch.setenv("KNOWLEDGE_BASE_URL", "http://127.0.0.1:8000")
     monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9000/v1")

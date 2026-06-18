@@ -6,7 +6,11 @@ from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from open_deep_research.persistence import save_markdown_report, slugify_filename
+from open_deep_research.persistence import (
+    normalize_markdown_for_mkdocs,
+    save_markdown_report,
+    slugify_filename,
+)
 from open_deep_research.research import StructuredResearchDraft
 
 
@@ -43,6 +47,88 @@ def test_save_markdown_report_sanitizes_and_deduplicates(tmp_path):
     )
 
     assert chinese_path.name == "H13钢.md"
+
+
+def test_normalize_markdown_for_mkdocs_adds_table_spacing():
+    markdown = "Intro\n| A | B |\n|---|---|\n| 1 | 2 |\nAfter"
+
+    normalized = normalize_markdown_for_mkdocs(markdown)
+
+    assert normalized == (
+        "Intro\n\n"
+        "| A | B |\n"
+        "| --- | --- |\n"
+        "| 1 | 2 |\n\n"
+        "After"
+    )
+
+
+def test_normalize_markdown_for_mkdocs_merges_extra_citation_column():
+    markdown = (
+        "| A | B |\n"
+        "|---|---|\n"
+        "| 1 | 2 | [[S1,S2]] |\n"
+    )
+
+    normalized = normalize_markdown_for_mkdocs(markdown)
+
+    assert normalized == (
+        "| A | B |\n"
+        "| --- | --- |\n"
+        "| 1 | 2 [[S1,S2]] |\n"
+    )
+
+
+def test_normalize_markdown_for_mkdocs_formats_math_delimiters():
+    markdown = (
+        "Before\n"
+        "$$N_y = G / \\sqrt{R}$$\n"
+        "After \\\\(\\\\frac{x}{y}\\\\)."
+    )
+
+    normalized = normalize_markdown_for_mkdocs(markdown)
+
+    assert normalized == (
+        "Before\n\n"
+        "$$N_y = G / \\sqrt{R}$$\n\n"
+        "After \\(\\frac{x}{y}\\)."
+    )
+
+
+def test_normalize_markdown_for_mkdocs_ends_list_before_following_content():
+    markdown = (
+        "1. First\n"
+        "2. Second\n"
+        "Image description\n\n"
+        "![Example](image.png)"
+    )
+
+    normalized = normalize_markdown_for_mkdocs(markdown)
+
+    assert normalized == (
+        "1. First\n"
+        "2. Second\n\n"
+        "Image description\n\n"
+        "![Example](image.png)"
+    )
+
+
+def test_normalize_markdown_for_mkdocs_separates_images_from_text():
+    markdown = (
+        "Caption\n"
+        "![First](first.png)\n"
+        "Next caption\n"
+        "![Second](second.png)[[S1]]"
+    )
+
+    normalized = normalize_markdown_for_mkdocs(markdown)
+
+    assert normalized == (
+        "Caption\n\n"
+        "![First](first.png)\n\n"
+        "Next caption\n\n"
+        "![Second](second.png)[[S1]]"
+    )
 
 
 def test_save_markdown_report_adds_metadata_and_increments_version(tmp_path):

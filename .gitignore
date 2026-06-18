@@ -50,6 +50,7 @@ htmlcov/
 *.log
 logs/
 wiki_outputs/
+site/
 
 # Local development
 .env.local

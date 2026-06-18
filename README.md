@@ -57,6 +57,33 @@ This will open the LangGraph Studio UI in your browser.
 
 Ask a question in the `messages` input field and click `Submit`. Select different configuration in the "Manage Assistants" tab.
 
+### Wiki Site
+
+Generated wiki entries are written to `wiki_site/docs/entries` by default and
+served as a static documentation site with MkDocs.
+
+Install the project dependencies in the `wiki` Conda environment:
+
+```powershell
+conda activate wiki
+python -m pip install -e .
+```
+
+Build the static site:
+
+```powershell
+python -m mkdocs build --strict
+```
+
+Start the local development server:
+
+```powershell
+python -m mkdocs serve --dev-addr 127.0.0.1:8765
+```
+
+Then open `http://127.0.0.1:8765`. MkDocs watches both the configuration and
+wiki Markdown files, rebuilding the site after changes.
+
 ### ⚙️ Configurations
 
 #### LLM :brain:
