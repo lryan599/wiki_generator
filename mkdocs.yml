@@ -15,7 +15,7 @@ plugins:
         - en
         - ja
       min_search_length: 2
-      indexing: full
+      indexing: sections
 
 hooks:
   - scripts/mkdocs_wiki_entries.py
