@@ -1,28 +1,6 @@
 (function () {
   "use strict";
 
-  var fallbackEntries = [
-    ["H13钢", "entries/H13钢/"],
-    ["T6热处理", "entries/T6热处理/"],
-    ["T6热处理-1", "entries/T6热处理-1/"],
-    ["压铸模", "entries/压铸模/"],
-    ["压铸机", "entries/压铸机/"],
-    ["压室", "entries/压室/"],
-    ["冷隔", "entries/冷隔/"],
-    ["Niyama准则", "entries/niyama准则/"],
-  ];
-
-  var preferredOrder = [
-    "H13钢",
-    "T6热处理",
-    "T6热处理-1",
-    "压铸模",
-    "压铸机",
-    "压室",
-    "冷隔",
-    "Niyama准则",
-  ];
-
   var batchSize = 200;
 
   function getBasePath() {
@@ -49,11 +27,7 @@
   }
 
   function entrySortKey(title) {
-    var preferredIndex = preferredOrder.indexOf(title);
-    if (preferredIndex >= 0) {
-      return [0, preferredIndex, title];
-    }
-    return [1, 0, title];
+    return title.toLowerCase();
   }
 
   function normalizeEntry(entry) {
@@ -98,13 +72,7 @@
     normalizedEntries.sort(function (left, right) {
       var leftKey = entrySortKey(left.title);
       var rightKey = entrySortKey(right.title);
-      if (leftKey[0] !== rightKey[0]) {
-        return leftKey[0] - rightKey[0];
-      }
-      if (leftKey[1] !== rightKey[1]) {
-        return leftKey[1] - rightKey[1];
-      }
-      return leftKey[2].localeCompare(rightKey[2], "zh-Hans-CN");
+      return leftKey.localeCompare(rightKey, "zh-Hans-CN");
     });
 
     return normalizedEntries;
@@ -127,7 +95,7 @@
   }
 
   function renderEntryDrawer(entries) {
-    if (!document.body || !entries.length || document.getElementById("wiki-entry-drawer")) {
+    if (!document.body || document.getElementById("wiki-entry-drawer")) {
       return;
     }
 
@@ -297,9 +265,9 @@
         throw new Error("wiki entry manifest unavailable");
       }
       var index = await response.json();
-      renderEntryDrawer((index.entries || []).length ? index.entries : fallbackEntries);
+      renderEntryDrawer(index.entries || []);
     } catch (error) {
-      renderEntryDrawer(fallbackEntries);
+      renderEntryDrawer([]);
     }
   }
 
