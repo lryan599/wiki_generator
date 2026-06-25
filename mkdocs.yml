@@ -17,6 +17,16 @@ plugins:
       min_search_length: 2
       indexing: full
 
+hooks:
+  - scripts/mkdocs_wiki_entries.py
+
+nav:
+  - 智能助手: chat.md
+
+not_in_nav: |
+  index.md
+  entries/*.md
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -30,9 +40,12 @@ markdown_extensions:
 
 extra_css:
   - assets/stylesheets/wiki.css
+  - assets/stylesheets/wiki-assistant.css
 
 extra_javascript:
   - assets/javascripts/mathjax.js
+  - assets/javascripts/wiki-nav.js
+  - assets/javascripts/wiki-assistant.js
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
 exclude_docs: |
