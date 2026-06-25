@@ -74,6 +74,138 @@ def add_markdown_metadata(
     return "---\n" + "\n".join(_render_yaml_lines(front_matter)) + "\n---\n\n" + body
 
 
+def _split_table_row(line: str) -> list[str]:
+    """Split a Markdown table row while preserving escaped pipes."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|") and not stripped.endswith(r"\|"):
+        stripped = stripped[:-1]
+    return [
+        cell.replace(r"\|", "|").strip()
+        for cell in re.split(r"(?<!\\)\|", stripped)
+    ]
+
+
+def _render_table_row(cells: list[str]) -> str:
+    """Render normalized Markdown table cells."""
+    escaped = [cell.replace("|", r"\|") for cell in cells]
+    return "| " + " | ".join(escaped) + " |"
+
+
+def _is_table_separator(line: str) -> bool:
+    cells = _split_table_row(line)
+    return bool(cells) and all(
+        re.fullmatch(r":?-{3,}:?", cell)
+        for cell in cells
+    )
+
+
+def _normalize_latex_commands(match: re.Match[str]) -> str:
+    """Collapse duplicated backslashes inside a math expression."""
+    expression = re.sub(
+        r"\\\\(?=[A-Za-z])",
+        lambda _: "\\",
+        match.group(2),
+    )
+    return match.group(1) + expression + match.group(3)
+
+
+def normalize_markdown_for_mkdocs(markdown: str) -> str:
+    """Normalize generated tables for Python-Markdown and MkDocs."""
+    has_trailing_newline = markdown.endswith(("\n", "\r"))
+    markdown = markdown.replace(r"\\(", r"\(").replace(r"\\)", r"\)")
+    markdown = markdown.replace(r"\\[", r"\[").replace(r"\\]", r"\]")
+    for pattern in (
+        r"(\$\$)(.*?)(\$\$)",
+        r"(\\\[)(.*?)(\\\])",
+        r"(\\\()(.*?)(\\\))",
+        r"(?<!\$)(\$)(?!\$)(.*?)(?<!\$)(\$)(?!\$)",
+    ):
+        markdown = re.sub(
+            pattern,
+            _normalize_latex_commands,
+            markdown,
+            flags=re.DOTALL,
+        )
+    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    normalized: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        if re.match(r"^\s*!\[[^\]]*\]\([^)]+\)(?:\[\[S\d+(?:,S\d+)*\]\])?\s*$", lines[index]):
+            if normalized and normalized[-1].strip():
+                normalized.append("")
+            normalized.append(lines[index].strip())
+            if index + 1 < len(lines) and lines[index + 1].strip():
+                normalized.append("")
+            index += 1
+            continue
+
+        if re.match(r"^\s*(?:\d+[.)]|[-+*])\s+", lines[index]):
+            normalized.append(lines[index])
+            index += 1
+            while (
+                index < len(lines)
+                and re.match(r"^\s*(?:\d+[.)]|[-+*])\s+", lines[index])
+            ):
+                normalized.append(lines[index])
+                index += 1
+            if index < len(lines) and lines[index].strip():
+                normalized.append("")
+            continue
+
+        if re.fullmatch(r"\s*\$\$.+\$\$\s*", lines[index]):
+            if normalized and normalized[-1].strip():
+                normalized.append("")
+            normalized.append(lines[index].strip())
+            if index + 1 < len(lines) and lines[index + 1].strip():
+                normalized.append("")
+            index += 1
+            continue
+
+        if (
+            index + 1 < len(lines)
+            and lines[index].lstrip().startswith("|")
+            and _is_table_separator(lines[index + 1])
+        ):
+            if normalized and normalized[-1].strip():
+                normalized.append("")
+
+            header_cells = _split_table_row(lines[index])
+            column_count = len(header_cells)
+            normalized.append(_render_table_row(header_cells))
+            normalized.append(_render_table_row(_split_table_row(lines[index + 1])))
+            index += 2
+
+            while index < len(lines) and lines[index].lstrip().startswith("|"):
+                cells = _split_table_row(lines[index])
+                if len(cells) > column_count:
+                    overflow = cells[column_count:]
+                    if all(
+                        re.fullmatch(r"\[\[S\d+(?:,S\d+)*\]\]", cell)
+                        for cell in overflow
+                    ):
+                        cells[column_count - 1] = " ".join(
+                            [cells[column_count - 1], *overflow]
+                        ).strip()
+                        cells = cells[:column_count]
+                if len(cells) < column_count:
+                    cells.extend([""] * (column_count - len(cells)))
+                normalized.append(_render_table_row(cells))
+                index += 1
+
+            if index < len(lines) and lines[index].strip():
+                normalized.append("")
+            continue
+
+        normalized.append(lines[index])
+        index += 1
+
+    result = "\n".join(normalized).rstrip()
+    return result + ("\n" if has_trailing_newline else "")
+
+
 def prepare_markdown_report(
     markdown: str,
     output_dir: str | Path,
@@ -93,6 +225,7 @@ def prepare_markdown_report(
     target_path, version = _allocate_versioned_path(target_dir / f"{filename_stem}.md")
     if metadata is not None:
         markdown = add_markdown_metadata(markdown, metadata, version=version)
+    markdown = normalize_markdown_for_mkdocs(markdown)
     return target_path, markdown
 
 

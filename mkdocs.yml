@@ -1,0 +1,52 @@
+site_name: 压铸技术 Wiki
+site_description: 自动生成并持续维护的压铸技术知识库
+site_dir: site
+docs_dir: wiki_site/docs
+
+theme:
+  name: mkdocs
+  locale: zh_CN
+  navigation_depth: 3
+  highlightjs: true
+
+plugins:
+  - search:
+      lang:
+        - en
+        - ja
+      min_search_length: 2
+      indexing: full
+
+hooks:
+  - scripts/mkdocs_wiki_entries.py
+
+nav:
+  - 智能助手: chat.md
+
+not_in_nav: |
+  index.md
+  entries/*.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - pymdownx.arithmatex:
+      generic: true
+  - tables
+  - toc:
+      permalink: true
+
+extra_css:
+  - assets/stylesheets/wiki.css
+  - assets/stylesheets/wiki-assistant.css
+
+extra_javascript:
+  - assets/javascripts/mathjax.js
+  - assets/javascripts/wiki-nav.js
+  - assets/javascripts/wiki-assistant.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
+
+exclude_docs: |
+  .gitkeep

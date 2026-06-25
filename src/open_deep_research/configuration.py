@@ -202,11 +202,11 @@ class Configuration(BaseModel):
         }
     )
     wiki_output_dir: str = Field(
-        default="wiki_outputs",
+        default="wiki_site/docs/entries",
         metadata={
             "x_oap_ui_config": {
                 "type": "text",
-                "default": "wiki_outputs",
+                "default": "wiki_site/docs/entries",
                 "description": "Directory where generated wiki markdown files are saved"
             }
         }

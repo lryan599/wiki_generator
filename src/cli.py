@@ -382,7 +382,11 @@ def main() -> None:
     parser.add_argument("input", nargs="?", type=Path, help="Input JSONL file or wiki_entries.txt")
     parser.add_argument("--topic", help="Direct topic text for a single wiki generation run")
     parser.add_argument("--id", dest="item_id", help="Optional ID/filename stem for --topic mode")
-    parser.add_argument("--output-dir", type=Path, default=Path("wiki_outputs"))
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=Path("wiki_site/docs/entries"),
+    )
     parser.add_argument("--results", type=Path, default=Path("wiki_outputs/results.jsonl"))
     parser.add_argument("--limit", type=int, help="Only run the first K records from the input file")
     parser.add_argument(
