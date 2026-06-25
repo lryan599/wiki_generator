@@ -108,25 +108,55 @@ textarea,
   opacity: 0.65;
 }
 
+.col-md-9 .wiki-table-wrapper {
+  width: 100%;
+  max-width: 100%;
+  margin: 1rem 0 1.35rem;
+  overflow-x: auto;
+  border: 1px solid var(--wiki-border);
+  border-radius: 6px;
+}
+
 .col-md-9 table {
-  display: block;
   width: max-content;
   min-width: 100%;
-  max-width: 100%;
-  overflow-x: auto;
+  margin: 1rem 0 1.35rem;
+  border-collapse: collapse;
   table-layout: auto;
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+.col-md-9 .wiki-table-wrapper table {
+  max-width: none;
+  margin: 0;
+}
+
+.col-md-9 table th,
+.col-md-9 table td {
+  min-width: 4.5rem;
+  max-width: 30rem;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid var(--wiki-border);
+  vertical-align: top;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 .col-md-9 table th {
-  white-space: nowrap;
+  color: #111827;
+  background: #f6f8fa;
+  font-weight: 700;
+  white-space: normal;
 }
 
-.col-md-9 table td {
-  min-width: 4.5rem;
-  max-width: 28rem;
-  vertical-align: top;
-  word-break: normal;
-  overflow-wrap: break-word;
+.col-md-9 table tbody tr:nth-child(even) {
+  background: #f6f8fa;
+}
+
+.col-md-9 table tbody tr:last-child th,
+.col-md-9 table tbody tr:last-child td {
+  border-bottom: 0;
 }
 
 .col-md-9 blockquote {

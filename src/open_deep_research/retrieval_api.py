@@ -18,17 +18,10 @@ DEFAULT_RETRIEVAL_MAX_CONCURRENCY = 5
 RETRIEVAL_MAX_CONCURRENCY_ENV = "RETRIEVAL_MAX_CONCURRENCY"
 
 
-class RetrievalQuery(BaseModel):
-    """A single retrieval query with an optional workspace override."""
-
-    query: str = Field(min_length=1)
-    workspace_id: str | None = None
-
-
 class RetrievalFindingsRequest(BaseModel):
     """Request body for concurrent query-to-findings generation."""
 
-    queries: list[str | RetrievalQuery] = Field(min_length=1)
+    queries: list[str] = Field(min_length=1)
     workspace_id: str | None = None
     knowledge_base_url: str | None = None
     summarize_findings: bool = True
@@ -36,20 +29,14 @@ class RetrievalFindingsRequest(BaseModel):
     image_topk: int = Field(default=3, ge=0, le=20)
     table_topk: int = Field(default=3, ge=0, le=20)
     chart_topk: int = Field(default=3, ge=0, le=20)
-    configurable: dict[str, Any] = Field(default_factory=dict)
 
-    def normalized_queries(self) -> list[RetrievalQuery]:
-        """Normalize string and object query forms into query objects."""
-        normalized: list[RetrievalQuery] = []
+    def normalized_queries(self) -> list[str]:
+        """Normalize query strings and drop empty items."""
+        normalized: list[str] = []
         for item in self.queries:
-            if isinstance(item, str):
-                query = item.strip()
-                if query:
-                    normalized.append(RetrievalQuery(query=query))
-                continue
-            query = item.query.strip()
+            query = item.strip()
             if query:
-                normalized.append(item.model_copy(update={"query": query}))
+                normalized.append(query)
         if not normalized:
             raise ValueError("At least one non-empty query is required.")
         return normalized
@@ -80,12 +67,12 @@ app.add_middleware(
 
 
 async def search_knowledge_base_for_query(
-    query: RetrievalQuery,
+    query: str,
     request: RetrievalFindingsRequest,
 ) -> tuple[ToolMessage, str | None, dict[str, Any]]:
     """Run one explicit query through the knowledge-base search tool."""
-    workspace_id = query.workspace_id or request.workspace_id
-    configurable = dict(request.configurable)
+    workspace_id = request.workspace_id
+    configurable: dict[str, Any] = {}
     if request.knowledge_base_url:
         configurable["knowledge_base_url"] = request.knowledge_base_url
     if workspace_id:
@@ -93,7 +80,7 @@ async def search_knowledge_base_for_query(
     runtime_config = {"configurable": configurable}
 
     args: dict[str, Any] = {
-        "queries": [query.query],
+        "queries": [query],
         "text_topk": request.text_topk,
         "image_topk": request.image_topk,
         "table_topk": request.table_topk,
@@ -135,7 +122,7 @@ def extract_retrieval_result(tool_message: ToolMessage) -> dict[str, Any]:
 
 
 async def generate_result_for_query(
-    query: RetrievalQuery,
+    query: str,
     request: RetrievalFindingsRequest,
 ) -> RetrievalResult:
     """Run one explicit query through search and optional findings compression."""
@@ -147,14 +134,14 @@ async def generate_result_for_query(
 
     if not request.summarize_findings:
         return RetrievalResult(
-            query=query.query,
+            query=query,
             workspace_id=workspace_id,
             retrieval_result=retrieval_result,
         )
 
     compressed = await compress_research(
         {
-            "research_topic": query.query,
+            "research_topic": query,
             "researcher_messages": [tool_message],
             "tool_call_iterations": 1,
         },
@@ -168,7 +155,7 @@ async def generate_result_for_query(
         structured_research = StructuredResearch.model_validate(structured_research)
 
     return RetrievalResult(
-        query=query.query,
+        query=query,
         workspace_id=workspace_id,
         structured_research=structured_research,
     )
@@ -181,7 +168,7 @@ async def generate_findings_for_queries(
     queries = request.normalized_queries()
     semaphore = asyncio.Semaphore(get_retrieval_max_concurrency())
 
-    async def run_query(query: RetrievalQuery) -> RetrievalResult:
+    async def run_query(query: str) -> RetrievalResult:
         async with semaphore:
             return await generate_result_for_query(query, request)
 
