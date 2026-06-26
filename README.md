@@ -75,14 +75,51 @@ Build the static site:
 python -m mkdocs build --strict
 ```
 
-Start the local development server:
+Start MkDocs and the retrieval findings API together on Linux:
 
-```powershell
-python -m mkdocs serve --dev-addr 127.0.0.1:8765
+```bash
+chmod +x scripts/start_wiki_services.sh
+./scripts/start_wiki_services.sh
 ```
 
-Then open `http://127.0.0.1:8765`. MkDocs watches both the configuration and
-wiki Markdown files, rebuilding the site after changes.
+By default this starts:
+
+- MkDocs wiki site: listens on `0.0.0.0:8765`
+- Retrieval findings API: listens on `0.0.0.0:8010`
+- MkDocs log: `logs/mkdocs.log`
+- Retrieval API log: `logs/retrieval_api.log`
+- PID file: `logs/wiki_services.pid`
+
+Press `Ctrl+C` in the script terminal to stop both services.
+
+The script uses the `wiki` Conda environment by default and loads `.env` if it
+exists. The main runtime settings can be overridden with environment variables:
+
+```bash
+CONDA_ENV=wiki \
+MKDOCS_HOST=0.0.0.0 \
+MKDOCS_PORT=8765 \
+API_HOST=0.0.0.0 \
+API_PORT=8010 \
+LOG_DIR=./logs \
+./scripts/start_wiki_services.sh
+```
+
+If you prefer to start the two services separately:
+
+```bash
+conda activate wiki
+python -m mkdocs serve -f mkdocs.yml --dev-addr 0.0.0.0:8765
+```
+
+```bash
+conda activate wiki
+python -m uvicorn open_deep_research.retrieval_api:app --host 0.0.0.0 --port 8010
+```
+
+Then open `http://<server-ip>:8765`. MkDocs watches both the configuration and
+wiki Markdown files, rebuilding the site after changes. The retrieval findings
+API is available at `http://<server-ip>:8010/api/v1/retrieval/findings`.
 
 ### ⚙️ Configurations
 
