@@ -237,10 +237,23 @@ def _format_meta_value(key: str, value: Any) -> str:
 
 def _format_meta_item(label: str, value: str) -> str:
     return (
-        '<div class="wiki-entry-info-item">'
-        f'<span class="wiki-entry-info-label">{escape(label)}</span>'
-        f'<span class="wiki-entry-info-value">{escape(value)}</span>'
+        '<div class="wiki-entry-info-row">'
+        f'<dt class="wiki-entry-info-label">{escape(label)}</dt>'
+        f'<dd class="wiki-entry-info-value">{escape(value)}</dd>'
         "</div>"
+    )
+
+
+def _format_meta_section(title: str, items: list[str]) -> str:
+    if not items:
+        return ""
+    return (
+        '<section class="wiki-entry-info-section">'
+        f'<div class="wiki-entry-info-section-title">{escape(title)}</div>'
+        '<dl class="wiki-entry-info-list">'
+        + "".join(items)
+        + "</dl>"
+        "</section>"
     )
 
 
@@ -266,28 +279,55 @@ def _format_entry_info_panel(page: Any) -> str:
     if not items and not basis_items:
         return ""
 
-    basis_html = ""
-    if basis_items:
-        basis_html = (
-            '<div class="wiki-entry-info-subtitle">置信度依据</div>'
-            '<div class="wiki-entry-info-grid wiki-entry-info-grid-compact">'
-            + "".join(basis_items)
-            + "</div>"
+    version = _format_meta_value("version", meta.get("version"))
+    generated_at = _format_meta_value("generated_at", meta.get("generated_at"))
+    confidence_score = _format_meta_value(
+        "confidence_score", meta.get("confidence_score")
+    )
+    confidence_level = _format_meta_value(
+        "confidence_level", meta.get("confidence_level")
+    )
+
+    summary_parts = [part for part in (version, generated_at) if part]
+    summary_meta = ""
+    if summary_parts:
+        summary_meta = (
+            '<span class="wiki-entry-info-summary-meta">'
+            + escape(" · ".join(summary_parts))
+            + "</span>"
         )
+
+    badges: list[str] = []
+    if confidence_level:
+        badges.append(
+            '<span class="wiki-entry-info-badge wiki-entry-info-badge-level">'
+            f"置信度 {escape(confidence_level)}"
+            "</span>"
+        )
+    if confidence_score:
+        badges.append(
+            '<span class="wiki-entry-info-badge wiki-entry-info-badge-score">'
+            f"{escape(confidence_score)}"
+            "</span>"
+        )
+    badges_html = ""
+    if badges:
+        badges_html = '<span class="wiki-entry-info-badges">' + "".join(badges) + "</span>"
 
     return (
         '<details class="wiki-entry-info-panel">'
         '<summary class="wiki-entry-info-summary">'
+        '<span class="wiki-entry-info-summary-main">'
         '<span class="wiki-entry-info-summary-title">条目信息</span>'
-        '<span class="wiki-entry-info-summary-hint">展开查看生成时间、版本和置信度</span>'
-        "</summary>"
-        '<div class="wiki-entry-info-body">'
-        '<div class="wiki-entry-info-grid">'
-        + "".join(items)
+        + summary_meta
+        + "</span>"
+        + badges_html
+        + "</summary>"
+        + '<div class="wiki-entry-info-body">'
+        + _format_meta_section("基本信息", items)
+        + _format_meta_section("置信度依据", basis_items)
         + "</div>"
-        + basis_html
-        + "</div>"
-        "</details>"
+        + "</details>"
     )
 
 
