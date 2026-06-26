@@ -35,11 +35,13 @@
       return {
         title: entry[0],
         location: entry[1],
+        source: entry[2] || entry[1],
       };
     }
     return {
       title: entry.title,
       location: entry.location,
+      source: entry.source || entry.location,
     };
   }
 
@@ -65,6 +67,7 @@
       normalizedEntries.push({
         title: title,
         location: normalized,
+        source: normalizedEntry.source || normalized,
         searchText: (title + " " + normalized).toLowerCase(),
       });
     });
@@ -257,6 +260,95 @@
     resetList(allEntries);
   }
 
+  function renderHomeEntries(entries) {
+    var root = document.querySelector("[data-wiki-home-entries]");
+    if (!root) {
+      return;
+    }
+
+    var batchSize = 48;
+    var allEntries = uniqueEntries(entries);
+    var filteredEntries = allEntries;
+    var renderedCount = 0;
+
+    root.innerHTML =
+      '<div class="wiki-home-toolbar">' +
+      '  <input type="search" class="wiki-home-search" placeholder="筛选条目" aria-label="筛选条目">' +
+      '  <span class="wiki-home-count"></span>' +
+      "</div>" +
+      '<div class="wiki-home-grid"></div>' +
+      '<button type="button" class="wiki-home-more">显示更多</button>' +
+      '<div class="wiki-home-empty">没有匹配的条目</div>';
+
+    var search = root.querySelector(".wiki-home-search");
+    var count = root.querySelector(".wiki-home-count");
+    var grid = root.querySelector(".wiki-home-grid");
+    var more = root.querySelector(".wiki-home-more");
+    var empty = root.querySelector(".wiki-home-empty");
+
+    function updateCount() {
+      count.textContent = filteredEntries.length + " 条";
+    }
+
+    function renderMore() {
+      var end = Math.min(renderedCount + batchSize, filteredEntries.length);
+      var fragment = document.createDocumentFragment();
+
+      for (var index = renderedCount; index < end; index += 1) {
+        var entry = filteredEntries[index];
+        var card = document.createElement("a");
+        var title = document.createElement("span");
+        var summary = document.createElement("span");
+        var meta = document.createElement("span");
+
+        card.className = "wiki-entry-card";
+        card.href = toSiteUrl(entry.location);
+        title.className = "wiki-entry-title";
+        title.textContent = entry.title;
+        summary.className = "wiki-entry-summary";
+        summary.textContent = "打开《" + entry.title + "》条目正文。";
+        meta.className = "wiki-entry-meta";
+        meta.textContent = entry.source || entry.location;
+
+        card.appendChild(title);
+        card.appendChild(summary);
+        card.appendChild(meta);
+        fragment.appendChild(card);
+      }
+
+      grid.appendChild(fragment);
+      renderedCount = end;
+      more.hidden = renderedCount >= filteredEntries.length;
+      empty.hidden = filteredEntries.length !== 0;
+    }
+
+    function resetGrid(nextEntries) {
+      filteredEntries = nextEntries;
+      renderedCount = 0;
+      grid.textContent = "";
+      updateCount();
+      renderMore();
+    }
+
+    function applyFilter() {
+      var query = search.value.trim().toLowerCase();
+      if (!query) {
+        resetGrid(allEntries);
+        return;
+      }
+
+      resetGrid(
+        allEntries.filter(function (entry) {
+          return entry.searchText.indexOf(query) !== -1;
+        })
+      );
+    }
+
+    search.addEventListener("input", applyFilter);
+    more.addEventListener("click", renderMore);
+    resetGrid(allEntries);
+  }
+
   async function loadEntries() {
     var indexUrl = toSiteUrl("assets/data/wiki-entries.json");
     try {
@@ -265,9 +357,12 @@
         throw new Error("wiki entry manifest unavailable");
       }
       var index = await response.json();
-      renderEntryDrawer(index.entries || []);
+      var entries = index.entries || [];
+      renderEntryDrawer(entries);
+      renderHomeEntries(entries);
     } catch (error) {
       renderEntryDrawer([]);
+      renderHomeEntries([]);
     }
   }
 

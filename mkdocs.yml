@@ -13,7 +13,7 @@ plugins:
   - search:
       lang:
         - en
-        - ja
+        - zh
       min_search_length: 2
       indexing: sections
 
