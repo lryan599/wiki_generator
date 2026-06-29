@@ -1,0 +1,72 @@
+name: wiki_generator
+
+volumes:
+    langgraph-data:
+        driver: local
+services:
+    langgraph-redis:
+        image: redis:6
+        restart: unless-stopped
+        healthcheck:
+            test: redis-cli ping
+            interval: 5s
+            timeout: 1s
+            retries: 5
+    langgraph-postgres:
+        image: pgvector/pgvector:pg16
+        restart: unless-stopped
+        ports:
+            - "5433:5432"
+        environment:
+            POSTGRES_DB: postgres
+            POSTGRES_USER: postgres
+            POSTGRES_PASSWORD: postgres
+        volumes:
+            - langgraph-data:/var/lib/postgresql/data
+        healthcheck:
+            test: pg_isready -U postgres
+            start_period: 10s
+            timeout: 1s
+            retries: 5
+            interval: 5s
+    langgraph-api:
+        image: wiki_generator-langgraph-api:latest
+        restart: unless-stopped
+        ports:
+            - "8123:8000"
+        depends_on:
+            langgraph-redis:
+                condition: service_healthy
+            langgraph-postgres:
+                condition: service_healthy
+        env_file:
+            - ../.env
+        environment:
+            REDIS_URI: redis://langgraph-redis:6379
+            LANGSMITH_API_KEY: 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
+            POSTGRES_URI: postgres://postgres:postgres@langgraph-postgres:5432/postgres?sslmode=disable
+    
+    mkdocs:
+      build:
+        context: ..
+        dockerfile: docker/dockerfile.mkdocs
+      image: wiki_generator_mkdocs:latest
+      restart: unless-stopped
+      ports:
+        - "8765:8765"
+        - "8010:8010"
+      env_file:
+        - ../.env
+      environment:
+        MKDOCS_HOST: 0.0.0.0
+        MKDOCS_PORT: "8765"
+        API_HOST: 0.0.0.0
+        API_PORT: "8010"
+        LOG_DIR: /deps/wiki_generator/logs
+        # 按你旧 compose 里的 service 名改：
+        # REDIS_HOST: redis
+        # POSTGRES_HOST: postgres
+      volumes:
+        - ./logs:/deps/wiki_generator/logs
+      networks:
+        - default
