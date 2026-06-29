@@ -1,14 +1,120 @@
+import os
+from enum import Enum
+from pathlib import Path
+
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, LLMResult
 
-from open_deep_research.configuration import Configuration
+from open_deep_research.configuration import Configuration, _parse_env_value
 from open_deep_research.research import StructuredResearch
 from open_deep_research.utils import (
     OpenAICompatibleUsageMetadataCallback,
     get_chat_model_config,
     is_token_limit_exceeded,
 )
+
+
+_SCHEMA_ENV_DEFAULT_FIELDS = {
+    "max_structured_output_retries",
+    "allow_clarification",
+    "max_concurrent_research_units",
+    "search_api",
+    "knowledge_base_url",
+    "workspace_id",
+    "openai_base_url",
+    "final_report_base_url",
+    "knowledge_base_query_timeout_seconds",
+    "knowledge_base_window_timeout_seconds",
+    "compression_image_limit",
+    "compression_image_max_bytes",
+    "save_wiki_markdown",
+    "wiki_output_dir",
+    "wiki_output_filename",
+    "max_researcher_iterations",
+    "max_react_tool_calls",
+    "summarization_model",
+    "summarization_model_max_tokens",
+    "summarization_timeout_seconds",
+    "max_content_length",
+    "brief_model",
+    "brief_model_max_tokens",
+    "brief_base_url",
+    "research_model",
+    "research_model_max_tokens",
+    "compression_model",
+    "compression_model_max_tokens",
+    "final_report_model",
+    "final_report_model_max_tokens",
+    "mcp_config",
+    "mcp_prompt",
+}
+
+
+def _env_example_values() -> dict[str, str]:
+    env_path = Path(__file__).resolve().parents[1] / ".env.example"
+    values: dict[str, str] = {}
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.lower()] = value
+    return values
+
+
+def _field_ui_config(field: object) -> dict | None:
+    candidates: list[dict] = []
+    json_schema_extra = getattr(field, "json_schema_extra", None)
+    if isinstance(json_schema_extra, dict):
+        candidates.append(json_schema_extra)
+        metadata = json_schema_extra.get("metadata")
+        if isinstance(metadata, dict):
+            candidates.append(metadata)
+    metadata_items = getattr(field, "metadata", ())
+    for metadata_item in metadata_items:
+        if isinstance(metadata_item, dict):
+            candidates.append(metadata_item)
+
+    for candidate in candidates:
+        ui_config = candidate.get("x_oap_ui_config")
+        if isinstance(ui_config, dict):
+            return ui_config
+    return None
+
+
+def _default_value(value: object) -> object:
+    if isinstance(value, Enum):
+        return value.value
+    return value
+
+
+def test_configuration_defaults_match_env_example():
+    env_values = _env_example_values()
+    field_names = set(Configuration.model_fields)
+
+    assert field_names <= set(env_values)
+
+    env_default_values = {
+        field_name: _parse_env_value(os.environ.get(field_name.upper(), env_values[field_name]))
+        if field_name in _SCHEMA_ENV_DEFAULT_FIELDS
+        else _parse_env_value(env_values[field_name])
+        for field_name in field_names
+    }
+    env_default_config = Configuration(**env_default_values)
+    code_default_config = Configuration()
+
+    for field_name in sorted(field_names):
+        assert getattr(code_default_config, field_name) == getattr(env_default_config, field_name)
+
+
+def test_oap_ui_defaults_match_model_defaults():
+    for field_name, field in Configuration.model_fields.items():
+        ui_config = _field_ui_config(field)
+        if not ui_config or "default" not in ui_config:
+            continue
+
+        assert ui_config["default"] == _default_value(field.default), field_name
 
 
 def test_configuration_defaults_wiki_output_to_mkdocs_docs(monkeypatch):
