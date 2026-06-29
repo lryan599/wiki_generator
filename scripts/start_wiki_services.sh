@@ -4,7 +4,6 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-CONDA_ENV="${CONDA_ENV:-wiki}"
 SKIP_CONDA="${SKIP_CONDA:-0}"
 LOAD_ENV_FILE="${LOAD_ENV_FILE:-1}"
 ENV_FILE="${ENV_FILE:-${REPO_ROOT}/.env}"
@@ -26,52 +25,6 @@ PID_FILE="${PID_FILE:-${LOG_DIR}/wiki_services.pid}"
 cd "${REPO_ROOT}"
 mkdir -p "${LOG_DIR}"
 
-activate_conda() {
-  if [[ "${SKIP_CONDA}" == "1" ]]; then
-    return 0
-  fi
-
-  if [[ -n "${CONDA_PREFIX:-}" && "$(basename "${CONDA_PREFIX}")" == "${CONDA_ENV}" ]]; then
-    return 0
-  fi
-
-  if [[ -n "${CONDA_EXE:-}" && -x "${CONDA_EXE}" ]]; then
-    local conda_setup
-    conda_setup="$("${CONDA_EXE}" shell.bash hook 2>/dev/null)" || true
-    if [[ -n "${conda_setup}" ]]; then
-      eval "${conda_setup}"
-      conda activate "${CONDA_ENV}"
-      return 0
-    fi
-  fi
-
-  if command -v conda >/dev/null 2>&1; then
-    local conda_setup
-    conda_setup="$(conda shell.bash hook 2>/dev/null)" || true
-    if [[ -n "${conda_setup}" ]]; then
-      eval "${conda_setup}"
-      conda activate "${CONDA_ENV}"
-      return 0
-    fi
-  fi
-
-  local conda_sh
-  for conda_sh in \
-    "${HOME}/miniconda3/etc/profile.d/conda.sh" \
-    "${HOME}/anaconda3/etc/profile.d/conda.sh" \
-    "/opt/conda/etc/profile.d/conda.sh"; do
-    if [[ -f "${conda_sh}" ]]; then
-      # shellcheck source=/dev/null
-      source "${conda_sh}"
-      conda activate "${CONDA_ENV}"
-      return 0
-    fi
-  done
-
-  echo "WARN: conda environment '${CONDA_ENV}' was not activated; using current python." >&2
-}
-
-activate_conda
 
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
