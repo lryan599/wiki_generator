@@ -1,0 +1,32 @@
+FROM langchain/langgraph-api:3.11
+
+WORKDIR /deps/wiki_generator
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH="/deps/wiki_generator/src" \
+    SKIP_CONDA=1 \
+    MKDOCS_HOST=0.0.0.0 \
+    MKDOCS_PORT=8765 \
+    API_HOST=0.0.0.0 \
+    API_PORT=8010 \
+    LOG_DIR=/deps/wiki_generator/logs \
+    LANGSERVE_GRAPHS='{"Deep Researcher": "/deps/wiki_generator/src/open_deep_research/deep_researcher.py:deep_researcher"}'
+
+ADD . /deps/wiki_generator
+
+RUN PYTHONDONTWRITEBYTECODE=1 uv pip install --system --no-cache-dir -c /api/constraints.txt -e /deps/wiki_generator
+
+RUN mkdir -p /api/langgraph_api /api/langgraph_runtime /api/langgraph_license \
+    && touch /api/langgraph_api/__init__.py /api/langgraph_runtime/__init__.py /api/langgraph_license/__init__.py
+RUN PYTHONDONTWRITEBYTECODE=1 uv pip install --system --no-cache-dir --no-deps -e /api
+
+RUN mkdir -p /deps/wiki_generator/logs
+
+EXPOSE 8765 8010
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8010/api/v1/retrieval/health', timeout=3).read()"
+
+ENTRYPOINT []
+CMD ["bash", "scripts/start_wiki_services.sh"]
