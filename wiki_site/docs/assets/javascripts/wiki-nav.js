@@ -114,7 +114,7 @@
       '  <span class="fa fa-list-ul" aria-hidden="true"></span>' +
       "  <span>条目</span>" +
       "</button>" +
-      '<a class="wiki-assistant-shortcut' +
+      '<a class="dify-chat-shortcut' +
       (chatIsActive ? " is-active" : "") +
       '" href="' +
       chatHref +

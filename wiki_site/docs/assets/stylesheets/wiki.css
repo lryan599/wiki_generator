@@ -361,7 +361,7 @@ textarea,
 }
 
 .wiki-entry-drawer-toggle,
-.wiki-assistant-shortcut {
+.dify-chat-shortcut {
   display: inline-flex;
   align-items: center;
   width: 106px;
@@ -381,15 +381,15 @@ textarea,
 
 .wiki-entry-drawer-toggle:hover,
 .wiki-entry-drawer-toggle:focus,
-.wiki-assistant-shortcut:hover,
-.wiki-assistant-shortcut:focus,
-.wiki-assistant-shortcut.is-active {
+.dify-chat-shortcut:hover,
+.dify-chat-shortcut:focus,
+.dify-chat-shortcut.is-active {
   color: #0b4f49;
   background: #eef7f6;
   text-decoration: none;
 }
 
-.wiki-assistant-shortcut.is-active {
+.dify-chat-shortcut.is-active {
   box-shadow: inset 3px 0 0 var(--wiki-accent),
     0 4px 14px rgba(31, 41, 51, 0.16);
 }

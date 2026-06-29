@@ -1,0 +1,47 @@
+.dify-chat-page {
+  background: #f5f7f8;
+}
+
+.dify-chat-page .bs-sidebar {
+  display: none;
+}
+
+.dify-chat-page .col-md-9 {
+  float: none;
+  width: 100%;
+  max-width: 1220px;
+  margin: 0 auto;
+  padding-right: 18px;
+  padding-left: 18px;
+}
+
+.dify-chat-page .col-md-9 > h1:first-child {
+  display: none;
+}
+
+.dify-chat-page .container {
+  width: 100%;
+  max-width: 1260px;
+}
+
+.dify-chat-shell {
+  min-height: calc(100vh - 138px);
+  padding: 18px 0 34px;
+}
+
+.dify-chat-frame-wrap {
+  overflow: hidden;
+  min-height: 700px;
+  border: 1px solid #d8dee4;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(31, 41, 51, 0.08);
+}
+
+.dify-chat-frame {
+  display: block;
+  width: 100%;
+  height: max(700px, calc(100vh - 150px));
+  min-height: 700px;
+  border: 0;
+}

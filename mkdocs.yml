@@ -40,12 +40,12 @@ markdown_extensions:
 
 extra_css:
   - assets/stylesheets/wiki.css
-  - assets/stylesheets/wiki-assistant.css
+  - assets/stylesheets/dify-chat.css
 
 extra_javascript:
   - assets/javascripts/mathjax.js
   - assets/javascripts/wiki-nav.js
-  - assets/javascripts/wiki-assistant.js
+  - assets/javascripts/dify-chat.js
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
 exclude_docs: |

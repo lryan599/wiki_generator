@@ -210,7 +210,7 @@ http://<server-ip>:8765
 
 ## 智能问答和检索 API
 
-Wiki 的智能问答页面在 `wiki_site/docs/chat.md`，当前通过嵌入 Dify chatbot 提供前端入口。回答时还可以配合本仓库的检索 API，将用户问题转换为结构化检索结果。
+Wiki 的智能问答页面在 `wiki_site/docs/chat.md`，当前只嵌入 Dify chatbot iframe；回答内容、Markdown、公式和引用展示均交由 Dify 前端渲染。Dify 工作流还可以配合本仓库的检索 API，将用户问题转换为结构化检索结果。
 
 单独启动检索 API：
 
