@@ -1,102 +1,263 @@
-# 🔬 Open Deep Research
+# 压铸技术 Wiki 生成器
 
-<img width="1388" height="298" alt="full_diagram" src="https://github.com/user-attachments/assets/12a2371b-8be2-4219-9b48-90503eb43c69" />
+本仓库基于 Open Deep Research / LangGraph 实现，面向压铸、铸造、材料与工艺知识库的自动词条生成和展示。系统会围绕目标词条进行检索、并行研究、证据压缩、引用校验和最终 Markdown 写作，生成的词条默认保存到 `wiki_site/docs/entries`，再由 MkDocs 构建为可搜索的静态 Wiki。
 
-Deep research has broken out as one of the most popular agent applications. This is a simple, configurable, fully open source deep research agent that works across many model providers, search tools, and MCP servers. It's performance is on par with many popular deep research agents ([see Deep Research Bench leaderboard](https://huggingface.co/spaces/Ayanami0730/DeepResearch-Leaderboard)).
+## 功能概览
 
-<img width="817" height="666" alt="Screenshot 2025-07-13 at 11 21 12 PM" src="https://github.com/user-attachments/assets/052f2ed3-c664-4a4f-8ec2-074349dcaa3f" />
+- **深度研究工作流**：`Deep Researcher` LangGraph 会依次完成需求澄清、研究简报、并行研究、结构化证据压缩和 Wiki 写作。
+- **知识库检索工具**：支持通过 KBA Query / Window / Resource API 检索文本、图片、表格和图表证据。
+- **批量词条生成**：`src/cli.py` 支持单词条、`wiki_entries.txt` 和 JSONL 批量输入，可本地进程运行，也可提交到 LangGraph API。
+- **Markdown 持久化**：生成文件会自动清洗文件名、避免覆盖、规范表格/公式/图片布局，并写入版本、生成时间和置信度元数据。
+- **Wiki 站点**：MkDocs 站点内置中文搜索、词条索引、条目信息面板和智能问答入口。
+- **运维脚本**：提供 Wiki 站点/检索服务启动、词条统计、失败线程重试等辅助脚本。
 
-### 🔥 Recent Updates
+## 目录结构
 
-**August 14, 2025**: See our free course [here](https://academy.langchain.com/courses/deep-research-with-langgraph) (and course repo [here](https://github.com/langchain-ai/deep_research_from_scratch)) on building open deep research.
+```text
+.
+├── langgraph.json                 # LangGraph 图配置，入口为 Deep Researcher
+├── mkdocs.yml                     # Wiki 静态站点配置
+├── wiki_entries.txt               # 批量词条输入示例，每行一个词条
+├── src/
+│   ├── cli.py                     # 单条/批量生成 CLI
+│   └── open_deep_research/
+│       ├── deep_researcher.py     # 主 LangGraph 工作流
+│       ├── configuration.py       # 环境变量和运行时配置
+│       ├── utils.py               # 搜索、KBA、模型配置等工具
+│       ├── research.py            # 结构化证据、引用和置信度逻辑
+│       ├── persistence.py         # Markdown 保存和规范化
+│       └── retrieval_api.py       # Wiki 智能问答使用的检索 API
+├── scripts/
+│   ├── start_wiki_services.sh     # 同时启动 MkDocs 和检索 API
+│   ├── wiki_stats.py              # 统计已生成词条
+│   ├── retry_failed_threads.py    # 重试/导出 LangGraph 线程
+│   └── mkdocs_wiki_entries.py     # MkDocs 构建 hook
+├── tests/                         # 单元测试和评测脚本
+└── wiki_site/docs/                # MkDocs 文档根目录
+    ├── chat.md                    # 智能问答页面
+    ├── index.md                   # 首页
+    └── entries/                   # 生成的词条 Markdown
+```
 
-**August 7, 2025**: Added GPT-5 and updated the Deep Research Bench evaluation w/ GPT-5 results.
+## 环境准备
 
-**August 2, 2025**: Achieved #6 ranking on the [Deep Research Bench Leaderboard](https://huggingface.co/spaces/Ayanami0730/DeepResearch-Leaderboard) with an overall score of 0.4344. 
+需要 Python 3.10+，推荐 Python 3.11。项目使用 `uv.lock` 固定依赖，优先使用 `uv` 安装。
 
-**July 30, 2025**: Read about the evolution from our original implementations to the current version in our [blog post](https://rlancemartin.github.io/2025/07/30/bitter_lesson/).
-
-**July 16, 2025**: Read more in our [blog](https://blog.langchain.com/open-deep-research/) and watch our [video](https://www.youtube.com/watch?v=agGiWUpxkhg) for a quick overview.
-
-### 🚀 Quickstart
-
-1. Clone the repository and activate a virtual environment:
 ```bash
-git clone https://github.com/langchain-ai/open_deep_research.git
-cd open_deep_research
 uv venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
 
-2. Install dependencies:
-```bash
+# Linux / macOS
+source .venv/bin/activate
+
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+
 uv sync
-# or
-uv pip install -r pyproject.toml
 ```
 
-3. Set up your `.env` file to customize the environment variables (for model selection, search tools, and other configuration settings):
+如果不用 `uv`，也可以安装为可编辑包：
+
+```bash
+python -m venv .venv
+pip install -e .
+```
+
+开发工具可额外安装：
+
+```bash
+pip install -e ".[dev]"
+```
+
+## 配置 `.env`
+
+先复制模板：
+
 ```bash
 cp .env.example .env
 ```
 
-4. Launch agent with the LangGraph server locally:
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+常用配置如下：
+
+| 变量 | 用途 |
+| --- | --- |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | OpenAI 或 OpenAI 兼容模型服务配置 |
+| `ANTHROPIC_API_KEY` / `GOOGLE_API_KEY` / `TAVILY_API_KEY` | 对应模型或搜索服务密钥 |
+| `SEARCH_API` | 外部搜索来源，可选 `none`、`tavily`、`openai`、`anthropic` |
+| `KNOWLEDGE_BASE_URL` | KBA 服务根地址，例如 `http://127.0.0.1:8000` |
+| `WORKSPACE_ID` | 默认知识库 workspace ID |
+| `BRIEF_MODEL` / `RESEARCH_MODEL` / `COMPRESSION_MODEL` / `FINAL_REPORT_MODEL` | 各阶段模型 |
+| `BRIEF_API_KEY` / `BRIEF_BASE_URL` | 初始研究简报阶段的专用模型配置 |
+| `FINAL_REPORT_API_KEY` / `FINAL_REPORT_BASE_URL` | 最终 Wiki 写作阶段的专用模型配置 |
+| `MAX_CONCURRENT_RESEARCH_UNITS` | 单次图运行内部并行研究数量 |
+| `SAVE_WIKI_MARKDOWN` | 是否把最终 Wiki 保存为 Markdown，默认 `true` |
+| `WIKI_OUTPUT_DIR` | 词条输出目录，默认 `wiki_site/docs/entries` |
+| `MCP_CONFIG` / `MCP_PROMPT` | 可选 MCP 工具配置 |
+
+最小可运行配置通常需要模型密钥。如果要使用知识库检索，还必须设置 `KNOWLEDGE_BASE_URL` 和 `WORKSPACE_ID`。
+
+## 启动 LangGraph API
+
+本地开发建议先启动 LangGraph API，再用 Studio UI 调试图运行。
 
 ```bash
-# Install dependencies and start the LangGraph server
-uvx --refresh --from "langgraph-cli[inmem]" --with-editable . --python 3.11 langgraph dev --allow-blocking
+mkdir -p logs
+langgraph dev --port 2024 --no-reload --allow-blocking | tee logs/langgraph.log
 ```
 
-This will open the LangGraph Studio UI in your browser.
-
-```
-- 🚀 API: http://127.0.0.1:2024
-- 🎨 Studio UI: https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
-- 📚 API Docs: http://127.0.0.1:2024/docs
-```
-
-Ask a question in the `messages` input field and click `Submit`. Select different configuration in the "Manage Assistants" tab.
-
-### Wiki Site
-
-Generated wiki entries are written to `wiki_site/docs/entries` by default and
-served as a static documentation site with MkDocs.
-
-Install the project dependencies in the `wiki` Conda environment:
+Windows PowerShell：
 
 ```powershell
-conda activate wiki
-python -m pip install -e .
+New-Item -ItemType Directory -Force logs | Out-Null
+langgraph dev --port 2024 --no-reload --allow-blocking | Tee-Object logs/langgraph.log
 ```
 
-Build the static site:
+启动后可访问：
 
-```powershell
-python -m mkdocs build --strict
+- API: `http://127.0.0.1:2024`
+- Studio UI: `https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024`
+- API Docs: `http://127.0.0.1:2024/docs`
+
+生产部署可继续使用 `langgraph up` 或 `langgraph deploy`，具体取决于部署环境和凭据配置。
+
+## 生成 Wiki 词条
+
+### 单个词条
+
+直接在当前进程中运行图：
+
+```bash
+python src/cli.py --topic "压铸速度" --id "压铸速度"
 ```
 
-Start MkDocs and the retrieval findings API together on Linux:
+通过已经启动的 LangGraph API 运行：
+
+```bash
+python src/cli.py --topic "压铸速度" --id "压铸速度" --api-url http://127.0.0.1:2024
+```
+
+### 批量生成
+
+`wiki_entries.txt` 每行格式为：
+
+```text
+词条名称|可选描述提示
+H13钢|热作模具钢，描述可能不完整
+压铸速度
+```
+
+批量提交：
+
+```bash
+python src/cli.py wiki_entries.txt --input-format wiki-entries --concurrency 2
+```
+
+通过 LangGraph API 批量提交：
+
+```bash
+python src/cli.py wiki_entries.txt \
+  --api-url http://127.0.0.1:2024 \
+  --assistant-id "Deep Researcher" \
+  --concurrency 2
+```
+
+常用参数：
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `input` | 无 | 输入文件，支持 `wiki_entries.txt` 或 JSONL |
+| `--topic` | 无 | 单词条模式，不需要输入文件 |
+| `--id` | 无 | 单词条输出文件名 stem |
+| `--output-dir` | `wiki_site/docs/entries` | Markdown 输出目录 |
+| `--results` | `wiki_outputs/results.jsonl` | 批量运行结果索引 |
+| `--limit` | 无 | 只处理前 N 条 |
+| `--concurrency` | `2` | 并发提交的独立图运行数量 |
+| `--api-url` | 无 | LangGraph API 地址；省略时在本进程运行 |
+| `--config-file` | 无 | JSON 配置文件，会合并到 LangGraph `configurable` |
+| `--config-json` | `{}` | 命令行内联 JSON 配置 |
+
+JSONL 输入每行是一个 JSON 对象，常用字段包括 `id`、`topic`、`name`、`wiki_entry_name`、`description`、`output_filename`、`thread_id` 和 `config`。
+
+示例：
+
+```jsonl
+{"id":"H13钢","wiki_entry_name":"H13钢","description":"热作模具钢","config":{"search_api":"none"}}
+{"id":"压铸速度","topic":"压铸速度"}
+```
+
+生成成功后，Markdown 默认写入 `wiki_site/docs/entries`。如果同名文件已存在，会自动追加 `-1`、`-2` 等后缀，避免覆盖已有词条。
+
+## 查看 Wiki 站点
+
+生成好的词条由 MkDocs 展示。只启动静态 Wiki：
+
+```bash
+python -m mkdocs serve -f mkdocs.yml --dev-addr 0.0.0.0:8765
+```
+
+然后打开：
+
+```text
+http://<server-ip>:8765
+```
+
+`mkdocs.yml` 使用 `scripts/mkdocs_wiki_entries.py` 作为构建 hook，会自动生成词条索引、增强中文搜索、规范表格 HTML，并在词条页顶部展示版本、生成时间和置信度信息。
+
+## 智能问答和检索 API
+
+Wiki 的智能问答页面在 `wiki_site/docs/chat.md`，当前通过嵌入 Dify chatbot 提供前端入口。回答时还可以配合本仓库的检索 API，将用户问题转换为结构化检索结果。
+
+单独启动检索 API：
+
+```bash
+python -m uvicorn open_deep_research.retrieval_api:app --host 0.0.0.0 --port 8010
+```
+
+健康检查：
+
+```text
+GET http://<server-ip>:8010/api/v1/retrieval/health
+```
+
+生成检索 findings：
+
+```bash
+curl -X POST http://127.0.0.1:8010/api/v1/retrieval/findings \
+  -H "Content-Type: application/json" \
+  -d '{
+    "queries": ["H13钢在压铸模中的热疲劳性能"],
+    "workspace_id": "your-workspace-id",
+    "summarize_findings": true,
+    "text_topk": 10,
+    "image_topk": 3,
+    "table_topk": 3,
+    "chart_topk": 3
+  }'
+```
+
+Linux 环境下可以同时启动 MkDocs 和检索 API：
 
 ```bash
 chmod +x scripts/start_wiki_services.sh
 ./scripts/start_wiki_services.sh
 ```
 
-By default this starts:
+默认服务和日志：
 
-- MkDocs wiki site: listens on `0.0.0.0:8765`
-- Retrieval findings API: listens on `0.0.0.0:8010`
-- MkDocs log: `logs/mkdocs.log`
-- Retrieval API log: `logs/retrieval_api.log`
-- PID file: `logs/wiki_services.pid`
+- MkDocs: `http://0.0.0.0:8765`
+- Retrieval API: `http://0.0.0.0:8010`
+- MkDocs 日志: `logs/mkdocs.log`
+- Retrieval API 日志: `logs/retrieval_api.log`
+- PID 文件: `logs/wiki_services.pid`
 
-Press `Ctrl+C` in the script terminal to stop both services.
-
-The script uses the `wiki` Conda environment by default and loads `.env` if it
-exists. The main runtime settings can be overridden with environment variables:
+可通过环境变量调整启动脚本：
 
 ```bash
-CONDA_ENV=wiki \
 MKDOCS_HOST=0.0.0.0 \
 MKDOCS_PORT=8765 \
 API_HOST=0.0.0.0 \
@@ -105,136 +266,102 @@ LOG_DIR=./logs \
 ./scripts/start_wiki_services.sh
 ```
 
-If you prefer to start the two services separately:
+## 依赖服务
+
+- **模型服务**：至少配置一个可用的聊天模型。OpenAI 兼容服务可通过 `OPENAI_BASE_URL`、`BRIEF_BASE_URL`、`FINAL_REPORT_BASE_URL` 指向不同 endpoint。
+- **KBA 服务**：词条生成和检索 API 的知识库工具依赖 Query、Window 和 Resource API，主要使用：
+  - `POST /api/v1/workspaces/{workspace_id}/query`
+  - `GET /api/v1/workspaces/{workspace_id}/document-elements/{uuid}/window?k=4`
+  - `GET /api/v1/workspaces/{workspace_id}/text-nodes/{uuid}/window?k=4`
+  - `GET /api/v1/workspaces/{workspace_id}/document-elements/{uuid}/resource`
+- **Dify 服务**：Wiki 智能问答页面的前端嵌入地址在 `wiki_site/docs/chat.md` 的 `data-dify-src` 中配置。
+
+## 维护脚本
+
+统计已生成词条：
 
 ```bash
-conda activate wiki
-python -m mkdocs serve -f mkdocs.yml --dev-addr 0.0.0.0:8765
+python scripts/wiki_stats.py wiki_site/docs/entries
 ```
+
+输出 JSON 统计：
 
 ```bash
-conda activate wiki
-python -m uvicorn open_deep_research.retrieval_api:app --host 0.0.0.0 --port 8010
+python scripts/wiki_stats.py wiki_site/docs/entries --format json
 ```
 
-Then open `http://<server-ip>:8765`. MkDocs watches both the configuration and
-wiki Markdown files, rebuilding the site after changes. The retrieval findings
-API is available at `http://<server-ip>:8010/api/v1/retrieval/findings`.
-
-### ⚙️ Configurations
-
-#### LLM :brain:
-
-Open Deep Research supports a wide range of LLM providers via the [init_chat_model() API](https://python.langchain.com/docs/how_to/chat_models_universal_init/). It uses LLMs for a few different tasks. See the below model fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
-
-For an OpenAI-compatible model endpoint, configure:
-
-```env
-OPENAI_API_KEY=your-api-key
-OPENAI_BASE_URL=http://your-openai-compatible-server/v1
-```
-
-- **Summarization** (default: `openai:gpt-4.1-mini`): Summarizes search API results
-- **Research** (default: `openai:gpt-4.1`): Power the search agent
-- **Compression** (default: `openai:gpt-4.1`): Compresses research findings
-- **Final Report Model** (default: `openai:gpt-4.1`): Write the final report
-
-> Note: the selected model will need to support [structured outputs](https://python.langchain.com/docs/integrations/chat/) and [tool calling](https://python.langchain.com/docs/how_to/tool_calling/).
-
-> Note: For OpenRouter: Follow [this guide](https://github.com/langchain-ai/open_deep_research/issues/75#issuecomment-2811472408) and for local models via Ollama  see [setup instructions](https://github.com/langchain-ai/open_deep_research/issues/65#issuecomment-2743586318).
-
-#### Search API :mag:
-
-Open Deep Research supports a wide range of search tools. By default it uses the [Tavily](https://www.tavily.com/) search API. Has full MCP compatibility and work native web search for Anthropic and OpenAI. See the `search_api` and `mcp_config` fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) file for more details. This can be accessed via the LangGraph Studio UI. 
-
-To enable workspace knowledge-base retrieval alongside the selected web search provider, configure the shared Query/Window API base URL and an optional default workspace:
-
-```env
-KNOWLEDGE_BASE_URL=http://127.0.0.1:8000
-WORKSPACE_ID=your-workspace-id
-KNOWLEDGE_BASE_QUERY_TIMEOUT_SECONDS=120
-KNOWLEDGE_BASE_WINDOW_TIMEOUT_SECONDS=120
-SUMMARIZATION_TIMEOUT_SECONDS=60
-```
-
-The knowledge-base tools are:
-
-- `knowledge_base_search`: calls `POST /api/v1/workspaces/{workspace_id}/query` with `only_need_data=true`, stopping before reranking and LLM generation. It exposes only curated text, image, table, and chart evidence fields needed by the researcher.
-- `knowledge_base_document_window`: calls the document-element Window API with a TextNode, ImageNode, or TableNode UUID and returns nearby mixed elements in source order.
-- `knowledge_base_text_window`: calls the text-node Window API with a TextNode UUID and returns nearby text nodes in source order.
-
-Both window tools accept `k`, where the response contains at most `k + 1` items including the center node. If `WORKSPACE_ID` is not configured, the researcher must provide `workspace_id` in each tool call.
-
-Timeouts are configurable in LangGraph Studio or through the environment variables above. Query and Window API calls default to 120 seconds per request; each webpage summarization call defaults to 60 seconds.
-
-#### Other 
-
-See the fields in the [configuration.py](https://github.com/langchain-ai/open_deep_research/blob/main/src/open_deep_research/configuration.py) for various other settings to customize the behavior of Open Deep Research. 
-
-### 📊 Evaluation
-
-Open Deep Research is configured for evaluation with [Deep Research Bench](https://huggingface.co/spaces/Ayanami0730/DeepResearch-Leaderboard). This benchmark has 100 PhD-level research tasks (50 English, 50 Chinese), crafted by domain experts across 22 fields (e.g., Science & Tech, Business & Finance) to mirror real-world deep-research needs. It has 2 evaluation metrics, but the leaderboard is based on the RACE score. This uses LLM-as-a-judge (Gemini) to evaluate research reports against a golden set of reports compiled by experts across a set of metrics.
-
-#### Usage
-
-> Warning: Running across the 100 examples can cost ~$20-$100 depending on the model selection.
-
-The dataset is available on [LangSmith via this link](https://smith.langchain.com/public/c5e7a6ad-fdba-478c-88e6-3a388459ce8b/d). To kick off evaluation, run the following command:
+查看某段时间后的失败 LangGraph 线程：
 
 ```bash
-# Run comprehensive evaluation on LangSmith datasets
+python scripts/retry_failed_threads.py \
+  --deployment-url http://localhost:8123 \
+  --after-local 2026-06-18T00:00:00
+```
+
+实际重试失败线程并导出结果：
+
+```bash
+python scripts/retry_failed_threads.py \
+  --deployment-url http://localhost:8123 \
+  --after-local 2026-06-18T00:00:00 \
+  --retry \
+  --concurrency 5
+```
+
+只导出已有 `final_report`，不重新运行：
+
+```bash
+python scripts/retry_failed_threads.py \
+  --deployment-url http://localhost:8123 \
+  --status idle \
+  --save-existing
+```
+
+## 测试和代码检查
+
+运行单元测试：
+
+```bash
+pytest
+```
+
+运行重点测试：
+
+```bash
+pytest tests/test_wiki_persistence.py tests/test_knowledge_base_search.py
+```
+
+代码检查：
+
+```bash
+ruff check
+mypy
+```
+
+评测脚本入口：
+
+```bash
 python tests/run_evaluate.py
 ```
 
-This will provide a link to a LangSmith experiment, which will have a name `YOUR_EXPERIMENT_NAME`. Once this is done, extract the results to a JSONL file that can be submitted to the Deep Research Bench.
+## 常见问题
 
-```bash
-python tests/extract_langsmith_data.py --project-name "YOUR_EXPERIMENT_NAME" --model-name "you-model-name" --dataset-name "deep_research_bench"
-```
+**生成时报 `Knowledge base tools are not configured`**
 
-This creates `tests/expt_results/deep_research_bench_model-name.jsonl` with the required format. Move the generated JSONL file to a local clone of the Deep Research Bench repository and follow their [Quick Start guide](https://github.com/Ayanami0730/deep_research_bench?tab=readme-ov-file#quick-start) for evaluation submission.
+设置 `KNOWLEDGE_BASE_URL`，并确保 `WORKSPACE_ID` 已配置或在工具调用中传入。
 
-#### Results 
+**词条没有写入磁盘**
 
-| Name | Commit | Summarization | Research | Compression | Total Cost | Total Tokens | RACE Score | Experiment |
-|------|--------|---------------|----------|-------------|------------|--------------|------------|------------|
-| GPT-5 | [ca3951d](https://github.com/langchain-ai/open_deep_research/pull/168/commits) | openai:gpt-4.1-mini | openai:gpt-5 | openai:gpt-4.1 |  | 204,640,896 | 0.4943 | [Link](https://smith.langchain.com/o/ebbaf2eb-769b-4505-aca2-d11de10372a4/datasets/6e4766ca-613c-4bda-8bde-f64f0422bbf3/compare?selectedSessions=4d5941c8-69ce-4f3d-8b3e-e3c99dfbd4cc&baseline=undefined) |
-| Defaults | [6532a41](https://github.com/langchain-ai/open_deep_research/commit/6532a4176a93cc9bb2102b3d825dcefa560c85d9) | openai:gpt-4.1-mini | openai:gpt-4.1 | openai:gpt-4.1 | $45.98 | 58,015,332 | 0.4309 | [Link](https://smith.langchain.com/o/ebbaf2eb-769b-4505-aca2-d11de10372a4/datasets/6e4766ca-6[…]ons=cf4355d7-6347-47e2-a774-484f290e79bc&baseline=undefined) |
-| Claude Sonnet 4 | [f877ea9](https://github.com/langchain-ai/open_deep_research/pull/163/commits/f877ea93641680879c420ea991e998b47aab9bcc) | openai:gpt-4.1-mini | anthropic:claude-sonnet-4-20250514 | openai:gpt-4.1 | $187.09 | 138,917,050 | 0.4401 | [Link](https://smith.langchain.com/o/ebbaf2eb-769b-4505-aca2-d11de10372a4/datasets/6e4766ca-6[…]ons=04f6002d-6080-4759-bcf5-9a52e57449ea&baseline=undefined) |
-| Deep Research Bench Submission | [c0a160b](https://github.com/langchain-ai/open_deep_research/commit/c0a160b57a9b5ecd4b8217c3811a14d8eff97f72) | openai:gpt-4.1-nano | openai:gpt-4.1 | openai:gpt-4.1 | $87.83 | 207,005,549 | 0.4344 | [Link](https://smith.langchain.com/o/ebbaf2eb-769b-4505-aca2-d11de10372a4/datasets/6e4766ca-6[…]ons=e6647f74-ad2f-4cb9-887e-acb38b5f73c0&baseline=undefined) |
+确认 `SAVE_WIKI_MARKDOWN=true`，并检查 `WIKI_OUTPUT_DIR` 是否指向可写目录。CLI 默认写入 `wiki_site/docs/entries`。
 
-### 🚀 Deployments and Usage
+**同名词条出现 `-1`、`-2` 后缀**
 
-#### LangGraph Studio
+这是预期行为，保存逻辑不会覆盖已有文件。如需替换旧词条，请先手动处理旧文件。
 
-Follow the [quickstart](#-quickstart) to start LangGraph server locally and test the agent out on LangGraph Studio.
+**MkDocs 页面表格或公式显示异常**
 
-#### Hosted deployment
- 
-You can easily deploy to [LangGraph Platform](https://langchain-ai.github.io/langgraph/concepts/#deployment-options). 
+生成保存时会做一次 Markdown 规范化，MkDocs 构建 hook 也会补充处理表格。如果是历史文件，可以重新保存或重新生成对应词条。
 
-#### Open Agent Platform
+**检索 API 返回 500**
 
-Open Agent Platform (OAP) is a UI from which non-technical users can build and configure their own agents. OAP is great for allowing users to configure the Deep Researcher with different MCP tools and search APIs that are best suited to their needs and the problems that they want to solve.
-
-We've deployed Open Deep Research to our public demo instance of OAP. All you need to do is add your API Keys, and you can test out the Deep Researcher for yourself! Try it out [here](https://oap.langchain.com)
-
-You can also deploy your own instance of OAP, and make your own custom agents (like Deep Researcher) available on it to your users.
-1. [Deploy Open Agent Platform](https://docs.oap.langchain.com/quickstart)
-2. [Add Deep Researcher to OAP](https://docs.oap.langchain.com/setup/agents)
-
-### Legacy Implementations 🏛️
-
-The `src/legacy/` folder contains two earlier implementations that provide alternative approaches to automated research. They are less performant than the current implementation, but provide alternative ideas understanding the different approaches to deep research.
-
-#### 1. Workflow Implementation (`legacy/graph.py`)
-- **Plan-and-Execute**: Structured workflow with human-in-the-loop planning
-- **Sequential Processing**: Creates sections one by one with reflection
-- **Interactive Control**: Allows feedback and approval of report plans
-- **Quality Focused**: Emphasizes accuracy through iterative refinement
-
-#### 2. Multi-Agent Implementation (`legacy/multi_agent.py`)  
-- **Supervisor-Researcher Architecture**: Coordinated multi-agent system
-- **Parallel Processing**: Multiple researchers work simultaneously
-- **Speed Optimized**: Faster report generation through concurrency
-- **MCP Support**: Extensive Model Context Protocol integration
+优先检查 KBA 服务可达性、`WORKSPACE_ID` 是否正确、`KNOWLEDGE_BASE_URL` 是否是完整 HTTP(S) 地址，以及模型压缩阶段是否有可用 API key。
