@@ -13,9 +13,18 @@ from mkdocs.structure.files import File, Files, InclusionLevel
 
 OUTPUT_PATH = "assets/data/wiki-entries.json"
 ENTRIES_DIR = "entries"
+SEARCH_INDEX_PATH = Path("search") / "search_index.json"
+SEARCH_WORKER_PATH = Path("search") / "worker.js"
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
 TABLE_RE = re.compile(r"(<table>\s*.*?\s*</table>)", re.DOTALL)
+CJK_RE = re.compile(r"[\u3400-\u9fff]+")
+SEARCH_WORKER_FIELD_MARKER = "      this.field('text');\n      this.ref('location');"
+SEARCH_WORKER_FIELD_REPLACEMENT = (
+    "      this.field('text');\n"
+    "      this.field('tokens');\n"
+    "      this.ref('location');"
+)
 ENTRY_META_FIELDS = (
     ("version", "版本"),
     ("generated_at", "生成时间"),
@@ -43,6 +52,23 @@ def _entry_title(src_uri: str) -> str:
 
 def _entry_sort_key(entry: dict[str, str]) -> tuple[str, str]:
     return (entry["title"].casefold(), entry["source"].casefold())
+
+
+def _chinese_ngrams(text: str, min_length: int = 2, max_length: int = 3) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+
+    for match in CJK_RE.finditer(text):
+        segment = match.group(0)
+        upper_length = min(max_length, len(segment))
+        for length in range(min_length, upper_length + 1):
+            for start in range(0, len(segment) - length + 1):
+                term = segment[start : start + length]
+                if term not in seen:
+                    seen.add(term)
+                    terms.append(term)
+
+    return terms
 
 
 def _is_entry_uri(src_uri: str) -> bool:
@@ -331,6 +357,56 @@ def _format_entry_info_panel(page: Any) -> str:
     )
 
 
+def _augment_search_index(site_dir: Path) -> None:
+    search_index_path = site_dir / SEARCH_INDEX_PATH
+    if not search_index_path.exists():
+        return
+
+    index = json.loads(search_index_path.read_text(encoding="utf-8"))
+    docs = index.get("docs")
+    if not isinstance(docs, list):
+        return
+
+    changed = False
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+
+        title = doc.get("title")
+        if not isinstance(title, str):
+            continue
+
+        tokens = " ".join(_chinese_ngrams(title))
+        if tokens and doc.get("tokens") != tokens:
+            doc["tokens"] = tokens
+            changed = True
+
+    if changed:
+        search_index_path.write_text(
+            json.dumps(index, ensure_ascii=False, separators=(",", ":")),
+            encoding="utf-8",
+        )
+
+
+def _patch_search_worker(site_dir: Path) -> None:
+    worker_path = site_dir / SEARCH_WORKER_PATH
+    if not worker_path.exists():
+        return
+
+    worker_js = worker_path.read_text(encoding="utf-8")
+    if "this.field('tokens');" in worker_js:
+        return
+    if SEARCH_WORKER_FIELD_MARKER not in worker_js:
+        return
+
+    worker_js = worker_js.replace(
+        SEARCH_WORKER_FIELD_MARKER,
+        SEARCH_WORKER_FIELD_REPLACEMENT,
+        1,
+    )
+    worker_path.write_text(worker_js, encoding="utf-8")
+
+
 def on_files(files: Files, config: dict[str, Any]) -> Files:
     entries: list[dict[str, str]] = []
 
@@ -389,3 +465,9 @@ def on_page_content(
     if entry_info_panel:
         return entry_info_panel + html
     return html
+
+
+def on_post_build(config: dict[str, Any]) -> None:
+    site_dir = Path(config["site_dir"])
+    _augment_search_index(site_dir)
+    _patch_search_worker(site_dir)
