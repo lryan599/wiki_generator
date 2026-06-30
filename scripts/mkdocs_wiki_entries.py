@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone
 from html import escape
@@ -14,6 +15,7 @@ from mkdocs.structure.files import File, Files, InclusionLevel
 OUTPUT_PATH = "assets/data/wiki-entries.json"
 ENTRIES_DIR = "entries"
 SEARCH_INDEX_PATH = Path("search") / "search_index.json"
+SEARCH_MAIN_PATH = Path("search") / "main.js"
 SEARCH_WORKER_PATH = Path("search") / "worker.js"
 FENCE_RE = re.compile(r"^\s*(```|~~~)")
 TABLE_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
@@ -24,6 +26,24 @@ SEARCH_WORKER_FIELD_REPLACEMENT = (
     "      this.field('text');\n"
     "      this.field('tokens');\n"
     "      this.ref('location');"
+)
+DEFAULT_WIKI_SEARCH_WORKSPACE_ID = "die_casting_generated_wiki"
+DEFAULT_WIKI_SEARCH_API_PORT = "8010"
+DEFAULT_WIKI_SEARCH_ENDPOINT = "/api/v1/wiki-search"
+DEFAULT_WIKI_SEARCH_LIMIT = 8
+DEFAULT_WIKI_SEARCH_CHUNK_TOP_K = 20
+DEFAULT_WIKI_SEARCH_SIMILARITY_THRESHOLD = 0.2
+DEFAULT_WIKI_SEARCH_DEBOUNCE_MS = 500
+WIKI_SEARCH_MAIN_JOIN_URL_MARKER = (
+    'function joinUrl (base, path) {\n'
+    '  if (path.substring(0, 1) === "/") {'
+)
+WIKI_SEARCH_MAIN_JOIN_URL_REPLACEMENT = (
+    'function joinUrl (base, path) {\n'
+    '  if (/^[a-z][a-z0-9+.-]*:\\/\\//i.test(path)) {\n'
+    '    return path;\n'
+    '  }\n'
+    '  if (path.substring(0, 1) === "/") {'
 )
 ENTRY_META_FIELDS = (
     ("version", "版本"),
@@ -407,6 +427,321 @@ def _patch_search_worker(site_dir: Path) -> None:
     worker_path.write_text(worker_js, encoding="utf-8")
 
 
+def _env_int(name: str, default: int) -> int:
+    raw_value = os.getenv(name)
+    if raw_value in (None, ""):
+        return default
+    try:
+        return int(raw_value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name)
+    if raw_value in (None, ""):
+        return default
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default
+
+
+def _wiki_search_worker_config() -> dict[str, Any]:
+    return {
+        "apiBase": os.getenv("WIKI_SEARCH_API_BASE", "").strip().rstrip("/"),
+        "apiPort": (os.getenv("WIKI_SEARCH_API_PORT") or DEFAULT_WIKI_SEARCH_API_PORT).strip(),
+        "endpoint": (os.getenv("WIKI_SEARCH_ENDPOINT") or DEFAULT_WIKI_SEARCH_ENDPOINT).strip(),
+        "workspaceId": (
+            os.getenv("WIKI_SEARCH_WORKSPACE_ID") or DEFAULT_WIKI_SEARCH_WORKSPACE_ID
+        ).strip(),
+        "limit": _env_int("WIKI_SEARCH_LIMIT", DEFAULT_WIKI_SEARCH_LIMIT),
+        "chunkTopK": _env_int("WIKI_SEARCH_CHUNK_TOP_K", DEFAULT_WIKI_SEARCH_CHUNK_TOP_K),
+        "similarityThreshold": _env_float(
+            "WIKI_SEARCH_SIMILARITY_THRESHOLD",
+            DEFAULT_WIKI_SEARCH_SIMILARITY_THRESHOLD,
+        ),
+        "debounceMs": DEFAULT_WIKI_SEARCH_DEBOUNCE_MS,
+        "timeoutMs": _env_int("WIKI_SEARCH_TIMEOUT_MS", 8000),
+    }
+
+
+def _build_api_search_worker() -> str:
+    config = json.dumps(
+        _wiki_search_worker_config(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"""var wikiSearchConfig = {config};
+var localSearchData = null;
+var localSearchLoading = null;
+var searchDebounceTimer = null;
+var searchSequence = 0;
+
+function getRuntimeLocation() {{
+  if (typeof self !== "undefined" && self.location) {{
+    return self.location;
+  }}
+  return window.location;
+}}
+
+function postSearchMessage(message) {{
+  if (typeof importScripts !== "function" && typeof onWorkerMessage === "function") {{
+    onWorkerMessage({{ data: message }});
+    return;
+  }}
+  postMessage(message);
+}}
+
+function normalizeEndpoint(endpoint) {{
+  endpoint = endpoint || "/api/v1/wiki-search";
+  return endpoint.substring(0, 1) === "/" ? endpoint : "/" + endpoint;
+}}
+
+function inferApiBase() {{
+  if (wikiSearchConfig.apiBase) {{
+    return wikiSearchConfig.apiBase;
+  }}
+
+  var location = getRuntimeLocation();
+  var port = wikiSearchConfig.apiPort || "8010";
+  return location.protocol + "//" + location.hostname + (port ? ":" + port : "");
+}}
+
+function buildApiUrl(query) {{
+  var url = inferApiBase() + normalizeEndpoint(wikiSearchConfig.endpoint);
+  var params = [
+    ["q", query],
+    ["limit", String(wikiSearchConfig.limit || 8)],
+    ["chunk_top_k", String(wikiSearchConfig.chunkTopK || 20)],
+    ["similarity_threshold", String(wikiSearchConfig.similarityThreshold || 0.2)]
+  ];
+
+  if (wikiSearchConfig.workspaceId) {{
+    params.push(["workspace_id", wikiSearchConfig.workspaceId]);
+  }}
+
+  return url + "?" + params.map(function (item) {{
+    return encodeURIComponent(item[0]) + "=" + encodeURIComponent(item[1]);
+  }}).join("&");
+}}
+
+function normalizeApiResults(payload) {{
+  var items = payload && payload.results;
+  if (!Array.isArray(items)) {{
+    return [];
+  }}
+
+  return items.map(function (item) {{
+    var summary = item.summary || item.text || "";
+    return {{
+      title: item.title || item.location || "未命名条目",
+      location: item.location || item.url || "",
+      text: item.text || summary,
+      summary: summary
+    }};
+  }}).filter(function (item) {{
+    return item.location;
+  }});
+}}
+
+async function apiSearch(query) {{
+  var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  var timeoutId = null;
+  if (controller) {{
+    timeoutId = setTimeout(function () {{
+      controller.abort();
+    }}, wikiSearchConfig.timeoutMs || 8000);
+  }}
+
+  try {{
+    var response = await fetch(buildApiUrl(query), {{
+      headers: {{ "Accept": "application/json" }},
+      signal: controller ? controller.signal : undefined
+    }});
+    if (!response.ok) {{
+      throw new Error("Wiki search API returned " + response.status);
+    }}
+    return normalizeApiResults(await response.json());
+  }} finally {{
+    if (timeoutId) {{
+      clearTimeout(timeoutId);
+    }}
+  }}
+}}
+
+function loadLocalSearchData() {{
+  if (localSearchData) {{
+    return Promise.resolve(localSearchData);
+  }}
+  if (localSearchLoading) {{
+    return localSearchLoading;
+  }}
+
+  var indexUrl = "search_index.json";
+  if (typeof importScripts !== "function" && typeof base_url !== "undefined") {{
+    indexUrl = String(base_url || "").replace(/\\/$/, "") + "/search/search_index.json";
+  }}
+
+  localSearchLoading = fetch(indexUrl)
+    .then(function (response) {{
+      if (!response.ok) {{
+        throw new Error("Local search index returned " + response.status);
+      }}
+      return response.json();
+    }})
+    .then(function (data) {{
+      localSearchData = data;
+      return data;
+    }});
+  return localSearchLoading;
+}}
+
+function unique(items) {{
+  return items.filter(function (item, index) {{
+    return item && items.indexOf(item) === index;
+  }});
+}}
+
+function buildQueryTerms(query) {{
+  var lower = String(query || "").toLowerCase();
+  var splitTerms = lower.split(/[\\s,，。；;、！？!?：:（）()]+/).filter(Boolean);
+  var latinTerms = lower.match(/[a-z0-9][a-z0-9.+#_-]*/g) || [];
+  return unique(splitTerms.concat(latinTerms)).filter(function (term) {{
+    return term.length >= 2;
+  }});
+}}
+
+function uniqueCjkChars(query) {{
+  return unique((String(query || "").match(/[\\u3400-\\u9fff]/g) || []));
+}}
+
+function scoreLocalDocument(haystack, terms, cjkChars) {{
+  var score = terms.reduce(function (total, term) {{
+    return total + (haystack.indexOf(term) >= 0 ? Math.max(2, term.length) : 0);
+  }}, 0);
+
+  if (cjkChars.length) {{
+    var hits = cjkChars.reduce(function (total, char) {{
+      return total + (haystack.indexOf(char) >= 0 ? 1 : 0);
+    }}, 0);
+    score += hits / cjkChars.length;
+  }}
+
+  return Math.round(score * 100) / 100;
+}}
+
+function shorten(text, limit) {{
+  var clean = String(text || "").replace(/\\s+/g, " ").trim();
+  if (clean.length <= limit) {{
+    return clean;
+  }}
+  return clean.slice(0, limit - 1) + "...";
+}}
+
+async function localSearch(query) {{
+  var data = await loadLocalSearchData();
+  var docs = data.docs || [];
+  var terms = buildQueryTerms(query);
+  var cjkChars = uniqueCjkChars(query);
+
+  return docs.map(function (doc) {{
+    var haystack = ((doc.title || "") + " " + (doc.text || "") + " " + (doc.tokens || "")).toLowerCase();
+    var score = scoreLocalDocument(haystack, terms, cjkChars);
+    var summary = shorten(doc.text || doc.title || "", 220);
+    return {{
+      title: doc.title || doc.location || "未命名条目",
+      location: doc.location || "",
+      text: doc.text || "",
+      summary: summary,
+      score: score
+    }};
+  }}).filter(function (item) {{
+    return item.location && item.score > 0;
+  }}).sort(function (left, right) {{
+    return right.score - left.score;
+  }}).slice(0, wikiSearchConfig.limit || 8);
+}}
+
+async function runSearch(query) {{
+  try {{
+    var apiResults = await apiSearch(query);
+    if (apiResults.length) {{
+      return apiResults;
+    }}
+  }} catch (error) {{
+    // Fall back to the static MkDocs index when the API is unavailable.
+  }}
+
+  try {{
+    return await localSearch(query);
+  }} catch (error) {{
+    return [];
+  }}
+}}
+
+function init() {{
+  postSearchMessage({{ config: {{ min_search_length: 2 }} }});
+  postSearchMessage({{ allowSearch: true }});
+}}
+
+function search(query) {{
+  var sequence = ++searchSequence;
+  if (searchDebounceTimer) {{
+    clearTimeout(searchDebounceTimer);
+  }}
+
+  searchDebounceTimer = setTimeout(function () {{
+    searchDebounceTimer = null;
+    runSearch(query).then(function (results) {{
+      if (sequence === searchSequence) {{
+        postSearchMessage({{ results: results }});
+      }}
+    }});
+  }}, wikiSearchConfig.debounceMs || 500);
+  return [];
+}}
+
+if (typeof importScripts === "function") {{
+  onmessage = function (event) {{
+    if (event.data.init) {{
+      init();
+    }} else if (event.data.query) {{
+      search(event.data.query);
+    }} else {{
+      console.error("Worker - Unrecognized message: " + event);
+    }}
+  }};
+}}
+"""
+
+
+def _replace_search_worker_with_api(site_dir: Path) -> None:
+    worker_path = site_dir / SEARCH_WORKER_PATH
+    if not worker_path.exists():
+        return
+    worker_path.write_text(_build_api_search_worker(), encoding="utf-8")
+
+
+def _patch_search_main(site_dir: Path) -> None:
+    main_path = site_dir / SEARCH_MAIN_PATH
+    if not main_path.exists():
+        return
+
+    main_js = main_path.read_text(encoding="utf-8")
+    if "^[a-z][a-z0-9+.-]*:" in main_js:
+        return
+    if WIKI_SEARCH_MAIN_JOIN_URL_MARKER not in main_js:
+        return
+
+    main_js = main_js.replace(
+        WIKI_SEARCH_MAIN_JOIN_URL_MARKER,
+        WIKI_SEARCH_MAIN_JOIN_URL_REPLACEMENT,
+        1,
+    )
+    main_path.write_text(main_js, encoding="utf-8")
+
+
 def on_files(files: Files, config: dict[str, Any]) -> Files:
     entries: list[dict[str, str]] = []
 
@@ -470,4 +805,8 @@ def on_page_content(
 def on_post_build(config: dict[str, Any]) -> None:
     site_dir = Path(config["site_dir"])
     _augment_search_index(site_dir)
-    _patch_search_worker(site_dir)
+    if os.getenv("WIKI_SEARCH_USE_API", "1").strip().lower() not in {"0", "false", "no"}:
+        _replace_search_worker_with_api(site_dir)
+        _patch_search_main(site_dir)
+    else:
+        _patch_search_worker(site_dir)
