@@ -2,6 +2,7 @@ from pathlib import Path
 
 from scripts.wiki_stats import (
     analyze_directory,
+    count_unique_citations,
     parse_simple_yaml,
     split_front_matter,
     split_sources_section,
@@ -53,6 +54,10 @@ def test_split_sources_section_removes_trailing_sources():
     assert sources == "## Sources\n- S1: very long source"
 
 
+def test_count_unique_citations_expands_groups_and_deduplicates():
+    assert count_unique_citations("a [[S1,S2]] b [[S2，S3]] c [[bad]]") == 3
+
+
 def test_analyze_directory_summarizes_entries_and_scores(tmp_path: Path):
     (tmp_path / "index.md").write_text("# Index\n", encoding="utf-8")
     (tmp_path / "A.md").write_text(
@@ -62,9 +67,9 @@ def test_analyze_directory_summarizes_entries_and_scores(tmp_path: Path):
         "  source_quality_score: 0.7\n"
         "---\n\n"
         "## 概述\n"
-        "abcd\n\n"
+        "abcd [[S1,S2]]\n\n"
         "### 细节\n"
-        "ef\n\n"
+        "ef [[S1]]\n\n"
         "## Sources\n"
         "- S1: excluded source text",
         encoding="utf-8",
@@ -76,7 +81,7 @@ def test_analyze_directory_summarizes_entries_and_scores(tmp_path: Path):
         "  source_quality_score: 0.5\n"
         "---\n\n"
         "## 介绍\n"
-        "xy",
+        "xy [[S3]]",
         encoding="utf-8",
     )
 
@@ -88,6 +93,8 @@ def test_analyze_directory_summarizes_entries_and_scores(tmp_path: Path):
     assert summary["total_entries"] == 2
     assert summary["total_sections"] == 3
     assert summary["average_sections"] == 1.5
+    assert summary["total_citations"] == 3
+    assert summary["average_citations"] == 1.5
     assert summary["include_sources"] is False
     assert summary["excluded_source_characters"] > 0
     assert summary_with_sources["include_sources"] is True

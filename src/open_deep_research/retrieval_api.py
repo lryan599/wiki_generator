@@ -3,10 +3,11 @@
 import asyncio
 import os
 import re
+import time
 from typing import Any
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import ToolMessage
 from langchain_core.tools import ToolException
@@ -44,6 +45,7 @@ class RetrievalFindingsRequest(BaseModel):
     image_topk: int = Field(default=3, ge=0, le=20)
     table_topk: int = Field(default=3, ge=0, le=20)
     chart_topk: int = Field(default=3, ge=0, le=20)
+    include_timings: bool = False
 
     def normalized_queries(self) -> list[str]:
         """Normalize query strings and drop empty items."""
@@ -86,6 +88,7 @@ class RetrievalResult(BaseModel):
     workspace_id: str | None = None
     structured_research: StructuredResearch | None = None
     retrieval_result: dict[str, Any] | None = None
+    timings: dict[str, Any] | None = None
 
 
 class WikiSearchResult(BaseModel):
@@ -460,19 +463,39 @@ async def generate_result_for_query(
     request: RetrievalFindingsRequest,
 ) -> RetrievalResult:
     """Run one explicit query through search and optional findings compression."""
+    started_at = time.perf_counter()
+    search_started_at = time.perf_counter()
     tool_message, workspace_id, runtime_config = await search_knowledge_base_for_query(
         query,
         request,
     )
+    search_elapsed_ms = round((time.perf_counter() - search_started_at) * 1000, 3)
     retrieval_result = extract_retrieval_result(tool_message)
+    artifact = tool_message.artifact if isinstance(tool_message.artifact, dict) else {}
+    tool_timings = artifact.get("timings")
+    query_timing = (
+        tool_timings[0]
+        if isinstance(tool_timings, list) and tool_timings
+        else {}
+    )
+    timings: dict[str, Any] | None = None
+    if request.include_timings:
+        timings = {
+            "knowledge_base_search_ms": search_elapsed_ms,
+            **(query_timing if isinstance(query_timing, dict) else {}),
+        }
 
     if not request.summarize_findings:
+        if timings is not None:
+            timings["total_ms"] = round((time.perf_counter() - started_at) * 1000, 3)
         return RetrievalResult(
             query=query,
             workspace_id=workspace_id,
             retrieval_result=retrieval_result,
+            timings=timings,
         )
 
+    compression_started_at = time.perf_counter()
     compressed = await compress_research(
         {
             "research_topic": query,
@@ -488,10 +511,18 @@ async def generate_result_for_query(
     if not isinstance(structured_research, StructuredResearch):
         structured_research = StructuredResearch.model_validate(structured_research)
 
+    if timings is not None:
+        timings["compression_ms"] = round(
+            (time.perf_counter() - compression_started_at) * 1000,
+            3,
+        )
+        timings["total_ms"] = round((time.perf_counter() - started_at) * 1000, 3)
+
     return RetrievalResult(
         query=query,
         workspace_id=workspace_id,
         structured_research=structured_research,
+        timings=timings,
     )
 
 
@@ -566,10 +597,16 @@ async def health() -> dict[str, str]:
 )
 async def retrieval_findings(
     request: RetrievalFindingsRequest,
+    response: Response,
 ) -> RetrievalFindingsResponse:
     """Generate structured findings for explicit retrieval queries."""
+    started_at = time.perf_counter()
     try:
-        return await generate_findings_for_queries(request)
+        result = await generate_findings_for_queries(request)
+        response.headers["X-Retrieval-Elapsed-Ms"] = str(
+            round((time.perf_counter() - started_at) * 1000, 3)
+        )
+        return result
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:

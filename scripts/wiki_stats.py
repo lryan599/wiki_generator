@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 NUMERIC_RE = re.compile(r"^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$")
+CITATION_RE = re.compile(r"\[\[([^\]]+)\]\]")
 SOURCE_SECTION_TITLES = {
     "source",
     "sources",
@@ -36,6 +37,7 @@ class EntryStats:
     source_characters: int
     sections: int
     section_characters: int
+    citations: int
     scores: dict[str, float] = field(default_factory=dict)
 
 
@@ -161,6 +163,18 @@ def count_section_characters(body: str) -> tuple[int, int]:
     return len(sections), sum(len(section) for section in sections)
 
 
+def count_unique_citations(body: str) -> int:
+    """Count unique citation aliases such as [[S1]] and [[S1,S2]]."""
+    aliases: list[str] = []
+    for match in CITATION_RE.finditer(body):
+        aliases.extend(
+            alias
+            for alias in re.split(r"[,，、;\s]+", match.group(1).strip())
+            if re.fullmatch(r"S\d+", alias)
+        )
+    return len(set(aliases))
+
+
 def iter_score_values(metadata: dict[str, Any], prefix: str = "") -> Iterable[tuple[str, float]]:
     """Yield numeric metadata values whose key name contains score."""
     for key, value in metadata.items():
@@ -190,6 +204,7 @@ def analyze_entry(
         source_characters=len(sources_body),
         sections=section_count,
         section_characters=section_char_count,
+        citations=count_unique_citations(counted_body),
         scores=dict(iter_score_values(metadata)),
     )
 
@@ -242,6 +257,7 @@ def analyze_directory(
     total_source_characters = sum(entry.source_characters for entry in entries)
     total_sections = sum(entry.sections for entry in entries)
     total_section_characters = sum(entry.section_characters for entry in entries)
+    total_citations = sum(entry.citations for entry in entries)
 
     return {
         "directory": str(directory),
@@ -254,6 +270,8 @@ def analyze_directory(
         "average_characters": round(total_characters / total_entries, 2) if total_entries else 0.0,
         "total_sections": total_sections,
         "average_sections": round(total_sections / total_entries, 2) if total_entries else 0.0,
+        "total_citations": total_citations,
+        "average_citations": round(total_citations / total_entries, 2) if total_entries else 0.0,
         "average_section_characters": (
             round(total_section_characters / total_sections, 2)
             if total_sections
@@ -266,6 +284,7 @@ def analyze_directory(
                 "characters": entry.characters,
                 "source_characters": entry.source_characters,
                 "sections": entry.sections,
+                "citations": entry.citations,
                 "average_section_characters": (
                     round(entry.section_characters / entry.sections, 2)
                     if entry.sections
@@ -292,6 +311,8 @@ def format_text(summary: dict[str, Any], *, include_details: bool = False) -> st
         f"Average characters per entry: {summary['average_characters']}",
         f"Total sections: {summary['total_sections']}",
         f"Average sections per entry: {summary['average_sections']}",
+        f"Total citations: {summary['total_citations']}",
+        f"Average citations per entry: {summary['average_citations']}",
         f"Average characters per section: {summary['average_section_characters']}",
         "",
         "Metadata score statistics:",
@@ -313,6 +334,7 @@ def format_text(summary: dict[str, Any], *, include_details: bool = False) -> st
                 f"- {entry['path']}: chars={entry['characters']}, "
                 f"source_chars={entry['source_characters']}, "
                 f"sections={entry['sections']}, "
+                f"citations={entry['citations']}, "
                 f"avg_section_chars={entry['average_section_characters']}"
             )
 

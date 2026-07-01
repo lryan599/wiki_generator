@@ -3,10 +3,20 @@
 import json
 import os
 from enum import Enum
+from pathlib import Path
 from typing import Any, List
 
 from langchain_core.runnables import RunnableConfig
 from pydantic import BaseModel, Field
+
+try:
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover - dotenv is a project dependency.
+    load_dotenv = None
+
+
+if load_dotenv is not None:
+    load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
 
 
 class SearchAPI(Enum):

@@ -5,6 +5,7 @@ import base64
 import json
 import logging
 import os
+import time
 import warnings
 from datetime import datetime, timedelta, timezone
 from typing import Annotated, Any, Dict, List, Literal
@@ -754,8 +755,9 @@ async def knowledge_base_search(
     if not normalized_queries:
         raise ToolException("At least one non-empty query is required.")
 
-    results = await asyncio.gather(*[
-        query_workspace_async(
+    async def timed_query_workspace(query: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        started_at = time.perf_counter()
+        result = await query_workspace_async(
             query=query,
             workspace_id=resolved_workspace_id,
             base_url=resolved_base_url,
@@ -763,8 +765,17 @@ async def knowledge_base_search(
             similarity_threshold=similarity_threshold,
             timeout_seconds=configurable.knowledge_base_query_timeout_seconds,
         )
+        return result, {
+            "query": query,
+            "query_workspace_ms": round((time.perf_counter() - started_at) * 1000, 3),
+        }
+
+    query_results = await asyncio.gather(*[
+        timed_query_workspace(query)
         for query in normalized_queries
     ])
+    results = [result for result, _ in query_results]
+    query_timings = [timing for _, timing in query_results]
     results = _limit_knowledge_base_results(
         results,
         text_topk=text_topk,
@@ -777,6 +788,7 @@ async def knowledge_base_search(
     return formatted_results, {
         "type": "knowledge_base_search",
         "results": results,
+        "timings": query_timings,
     }
 
 
